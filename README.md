@@ -1,127 +1,94 @@
-# Simple Web3 Real Estate (Local Only)
+# High-End Web3 Real Estate Platform
 
-This is a beginner-friendly project with:
-- `React` frontend
-- `Node + Express` backend
-- `Solidity + Hardhat` local blockchain
-- `MetaMask` wallet
+A premium, responsive, and fully decentralized fractional real estate marketplace. This project allows users to invest in real estate by purchasing digital shares (tokens) and earning rental income directly on the blockchain.
 
-No AWS and no cloud services.
+## 🚀 Key Features
+- **Fractional Ownership**: Invest in high-value properties for as little as 0.01 ETH.
+- **On-Chain Yield Distribution**: Admins can distribute rental income; investors claim their portion directly via smart contracts.
+- **Premium UI/UX**: Modern "Glassmorphic" design with a fully responsive layout for Mobile, Tablet, and Desktop.
+- **MetaMask Integration**: Secure Web3 authentication and transaction signing.
+- **Live Performance Metrics**: Real-time tracking of Portfolio Value, Yield %, and Claimable Rent.
+- **Hybrid Backend**: Uses FastAPI for lightning-fast metadata orchestration and transaction logging.
 
-## Step 1: Folder Structure
+---
 
+## 🛠️ Technology Stack
+- **Frontend**: React (Vite), CSS3 (Flexbox/Grid), Ethers.js
+- **Backend**: FastAPI (Python), Web3.py
+- **Blockchain**: Solidity (Smart Contracts), Hardhat (Local Environment)
+- **Wallet**: MetaMask
+
+---
+
+## 📂 Project Structure
 ```text
 web3_realestate/
-  blockchain/   # smart contract + local chain scripts
-  server/       # backend APIs (GET /properties, POST /buy)
-  client/       # simple React UI
+├── blockchain/   # Solidity Smart Contracts & Hardhat environment
+├── server/       # FastAPI Backend (Active Engine)
+└── client/       # Premium React Frontend
 ```
 
-## Step 2: Start Local Blockchain
+---
 
-Open terminal 1:
+## 🚦 Getting Started
 
+### 1. Start Local Blockchain
+Open **Terminal 1**:
 ```bash
 cd blockchain
 npm install
 npm run node
 ```
+*Keep this running to maintain the local Ethereum network.*
 
-Keep terminal 1 running.
-
-Open terminal 2:
-
+### 2. Deploy Smart Contracts
+Open **Terminal 2**:
 ```bash
 cd blockchain
-copy .env.example .env
+# Copy .env.example to .env and set your private key if needed
 npm run compile
 npm run deploy:local
 ```
+*Copy the Deployed Contract Address from the output.*
 
-Copy the deployed contract address from terminal output.
-
-## Step 3: Start Backend
-
-Open terminal 3:
-
+### 3. Start the Backend (FastAPI)
+Open **Terminal 3**:
 ```bash
 cd server
-npm install
-copy .env.example .env
+pip install -r requirements.txt
+python main.py
 ```
+*The backend orchestrates property metadata and transaction history at http://localhost:8000.*
 
-Edit `server/.env` and set:
-
-```text
-CONTRACT_ADDRESS=PASTE_DEPLOYED_ADDRESS_HERE
-```
-
-Then run:
-
-```bash
-npm run dev
-```
-
-Backend runs at `http://localhost:4000`.
-
-## Step 4: Start Frontend
-
-Open terminal 4:
-
+### 4. Start the Frontend (React)
+Open **Terminal 4**:
 ```bash
 cd client
 npm install
-copy .env.example .env
-```
-
-Edit `client/.env` and set:
-
-```text
-VITE_CONTRACT_ADDRESS=PASTE_DEPLOYED_ADDRESS_HERE
-```
-
-Then run:
-
-```bash
 npm run dev
 ```
+*Access the dashboard at http://localhost:5173.*
 
-Frontend runs at `http://localhost:5173`.
+---
 
-## Step 5: MetaMask Setup
+## 🦊 MetaMask Setup
+1. Add a **Custom RPC Network**:
+   - Network Name: `Hardhat Local`
+   - RPC URL: `http://127.0.0.1:8545`
+   - Chain ID: `31337`
+   - Currency Symbol: `ETH`
+2. **Import Account**: Use one of the private keys printed by the Hardhat Node in Terminal 1.
 
-Add network in MetaMask:
-- Network Name: `Hardhat Local`
-- RPC URL: `http://127.0.0.1:8545`
-- Chain ID: `31337`
-- Currency Symbol: `ETH`
+---
 
-Import one test private key printed by Hardhat node.
+## 📜 Simple App Flow
+1. **Connect Wallet**: Authenticate via MetaMask.
+2. **Browse Properties**: View high-end listings with real-time availability.
+3. **Invest**: Purchase fractional shares directly on-chain.
+4. **Earn**: Watch your "Claimable Rent" grow as the Admin distributes yield.
+5. **Withdraw**: Click "Claim Rent" to transfer your profits to your wallet.
 
-## Simple App Flow
+---
 
-1. Click **Connect MetaMask**
-2. View list of properties
-3. Click **Buy 1 Share**
-4. Confirm tx in MetaMask
-5. App sends tx hash to backend (`POST /buy`)
-6. Transaction history updates in UI
-
-## Backend APIs
-
-- `GET /properties`  
-  Returns property list from smart contract
-
-- `POST /buy`  
-  Verifies tx hash on local chain and stores history
-
-Request body example:
-
-```json
-{
-  "propertyId": 0,
-  "sharesToBuy": 1,
-  "buyerWallet": "0xYourWalletAddress",
-  "txHash": "0xTransactionHash"
-}
-```
+## 🛡️ License
+Distributed under the MIT License.
