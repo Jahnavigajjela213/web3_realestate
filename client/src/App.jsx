@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { BrowserProvider } from "ethers";
-import { buySharesOnChain, getContractOwner, addPropertyOnChain, distributeRentOnChain, claimRentOnChain, fetchPendingRent } from "./services/contract";
+import { buySharesOnChain, getContractOwner, addPropertyOnChain, distributeRentOnChain, claimRentOnChain, fetchPendingRent, setTenantOnChain, payRentOnChain } from "./services/contract";
 import { fetchProperties, fetchUserPortfolio, savePropertyMetadata } from "./services/api";
 import { APP_CONFIG } from "./config/env";
 
@@ -58,6 +58,7 @@ const INITIAL_BALANCE = 10000;
   // Admin form state
   const [adminForm, setAdminForm] = useState({ name: "", symbol: "", sharePriceEth: "0.01", totalShares: 100, location: "", image: "", description: "" });
   const [adminRentForm, setAdminRentForm] = useState({ propertyId: 0, rentEth: "0.1" });
+  const [adminTenantForm, setAdminTenantForm] = useState({ propertyId: 0, name: "", rentEth: "0.1" });
   const [adminStatus, setAdminStatus] = useState("");
 
   // Helper: Get consistent ID (1-20) for investor avatar
@@ -452,36 +453,59 @@ const INITIAL_BALANCE = 10000;
   // -------------------------------------------------------------------
   const handleAddProperty = async () => {
     if (!walletAddress) return;
-    if (!provider) {
-      alert("Demo Mode: MetaMask is required to deploy contracts. Please connect MetaMask as the Admin.");
+    
+    if (adminForm.image.includes('google.com/imgres')) {
+      alert("Invalid Image URL: You have pasted a link to a Google Search page, not a direct image. Please right-click the image and select 'Copy Image Address' to get a valid link (usually ending in .jpg or .png).");
       return;
     }
+
     setAdminStatus("processing");
     try {
-      const result = await addPropertyOnChain({
-        provider,
-        name: adminForm.name,
-        symbol: adminForm.symbol,
-        sharePriceEth: adminForm.sharePriceEth,
-        totalShares: parseInt(adminForm.totalShares)
-      });
-      // Get the new property index (total count - 1)
-      const updated = await fetchProperties();
-      setProperties(updated);
-      const newId = updated.length - 1;
-      // Save metadata to backend
-      await savePropertyMetadata({
-        id: newId,
-        name: adminForm.name,
-        location: adminForm.location,
-        image: adminForm.image,
-        description: adminForm.description
-      });
-      setAdminStatus(`✅ Property "${adminForm.name}" deployed! Tx: ${result.txHash.slice(0, 12)}...`);
+      if (!provider) {
+        // SIMULATED DEPLOYMENT
+        await savePropertyMetadata({
+          name: adminForm.name,
+          symbol: adminForm.symbol,
+          sharePriceEth: adminForm.sharePriceEth,
+          totalShares: parseInt(adminForm.totalShares),
+          location: adminForm.location,
+          image: adminForm.image,
+          description: adminForm.description,
+          isSimulated: true
+        });
+        
+        const updated = await fetchProperties();
+        setProperties(updated);
+        setAdminStatus(`✅ [DEMO] Property "${adminForm.name}" created (Simulated)`);
+      } else {
+        // REAL ON-CHAIN DEPLOYMENT
+        const result = await addPropertyOnChain({
+          provider,
+          name: adminForm.name,
+          symbol: adminForm.symbol,
+          sharePriceEth: adminForm.sharePriceEth,
+          totalShares: parseInt(adminForm.totalShares)
+        });
+        
+        const updated = await fetchProperties();
+        setProperties(updated);
+        const newId = updated.length - 1;
+        
+        await savePropertyMetadata({
+          id: newId,
+          name: adminForm.name,
+          location: adminForm.location,
+          image: adminForm.image,
+          description: adminForm.description
+        });
+        setAdminStatus(`✅ Property "${adminForm.name}" deployed! Tx: ${result.txHash.slice(0, 12)}...`);
+      }
+      
       setAdminForm({ name: "", symbol: "", sharePriceEth: "0.01", totalShares: 100, location: "", image: "", description: "" });
+      setTimeout(() => setAdminStatus(""), 5000);
     } catch (err) {
-      console.error("Add property failed:", err);
-      setAdminStatus(`❌ Failed: ${err.reason || err.message}`);
+      console.error("Deploy failed:", err);
+      setAdminStatus(`❌ Error: ${err.message || "Deployment failed"}`);
     }
   };
 
@@ -550,6 +574,71 @@ const INITIAL_BALANCE = 10000;
     } catch (err) {
       console.error("Distribute rent failed:", err);
       setAdminStatus(`❌ Failed: ${err.reason || err.message}`);
+    }
+  };
+
+  // Admin: Set Tenant
+  const handleSetTenant = async () => {
+    if (!walletAddress) return;
+    setAdminStatus("processing");
+    try {
+      if (provider) {
+        await setTenantOnChain({
+          provider,
+          propertyId: parseInt(adminTenantForm.propertyId),
+          name: adminTenantForm.name,
+          rentEth: adminTenantForm.rentEth
+        });
+      }
+      setAdminStatus(`✅ Tenant "${adminTenantForm.name}" assigned to Property #${adminTenantForm.propertyId}`);
+      loadProperties();
+      setTimeout(() => setAdminStatus(""), 5000);
+    } catch (err) {
+      console.error("Set tenant failed:", err);
+      setAdminStatus(`❌ Error: ${err.message || "Failed to set tenant"}`);
+    }
+  };
+
+  // Demo/Tenant: Pay Rent
+  const handlePayRent = async (property) => {
+    if (!walletAddress) return;
+    setBuyStatus({ state: "processing", message: "Processing rent payment..." });
+    try {
+      if (provider) {
+        await payRentOnChain({
+          provider,
+          propertyId: property.id,
+          rentEth: property.tenant.rentAmount
+        });
+      }
+
+      // Log in backend for history (Simulated/On-chain fallback)
+      await fetch(`${APP_CONFIG.apiBaseUrl}/transactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId: property.id,
+          propertyName: property.name,
+          sharesToBuy: 0,
+          amountEth: property.tenant.rentAmount,
+          buyerWallet: walletAddress,
+          buyerName: getInvestorName(walletAddress),
+          txHash: `0x-rent-${Date.now()}`,
+          isMock: !provider,
+          type: "distribute"
+        })
+      });
+
+      setNotification({ show: true, message: `✅ Rent of ${property.tenant.rentAmount} ETH paid successfully!` });
+      loadProperties();
+      loadPortfolio();
+      loadHistory();
+      setBuyStatus({ state: "idle", message: "" });
+      setTimeout(() => setNotification({ show: false, message: "" }), 5000);
+    } catch (err) {
+      console.error("Rent payment failed:", err);
+      setBuyStatus({ state: "idle", message: "" });
+      alert(err.reason || "Rent payment failed. Ensure you have enough ETH.");
     }
   };
 
@@ -835,36 +924,32 @@ const INITIAL_BALANCE = 10000;
 
               <div className="input-group">
                 <label>Enter Number of Shares</label>
-                <input
-                  type="number"
-                  min="1"
-                  max={selectedProperty.availableShares}
-                  value={sharesToBuy}
-                  onChange={(e) => setSharesToBuy(parseInt(e.target.value) || 0)}
-                  disabled={buyStatus.state === "processing" || buyStatus.state === "success"}
-                />
-              </div>
+                <div className="share-calc">
+                  <div className="calc-row">
+                    <span>Shares to Buy</span>
+                    <input 
+                      type="number" 
+                      min="1" 
+                      max={selectedProperty.availableShares}
+                      value={sharesToBuy}
+                      onChange={(e) => setSharesToBuy(Math.max(1, parseInt(e.target.value) || 1))}
+                    />
+                  </div>
+                  <div className="calc-row total">
+                    <span>Total Price</span>
+                    <span>{(sharesToBuy * parseFloat(selectedProperty.sharePriceEth)).toFixed(3)} ETH</span>
+                  </div>
+                </div>
 
-              <div className="total-cost">
-                <span className="total-cost-label">Total Cost</span>
-                <span className="total-cost-value" style={{ textAlign: "right" }}>
-                  {(sharesToBuy * parseFloat(selectedProperty.sharePriceEth)).toFixed(4)} ETH
-                  {ethInr && <span style={{ display: "block", fontSize: "0.9rem", color: "var(--text-muted)", fontWeight: 400 }}>{toInr((sharesToBuy * parseFloat(selectedProperty.sharePriceEth)).toFixed(4))}</span>}
-                </span>
+                <button 
+                  className="btn-primary" 
+                  style={{ width: "100%", padding: "16px", marginTop: "20px" }}
+                  onClick={handleBuyShares}
+                  disabled={buyStatus.state === "processing"}
+                >
+                  {buyStatus.state === "processing" ? "Processing..." : `Buy ${sharesToBuy} Shares`}
+                </button>
               </div>
-
-              <button
-                className={`btn-primary ${(!provider && !walletAddress) || (sharesToBuy * parseFloat(selectedProperty.sharePriceEth) > 0.05 && walletAddress.startsWith('0x3c')) ? 'warning' : ''}`}
-                style={{ width: "100%", padding: "16px", fontSize: "1.2rem" }}
-                onClick={handleBuy}
-                disabled={buyStatus.state === "processing" || buyStatus.state === "success" || !walletAddress}
-              >
-                {buyStatus.state === "processing"
-                  ? "Waiting for confirmation..."
-                  : walletAddress
-                    ? "Confirm Purchase"
-                    : "Connect Wallet to Purchase"}
-              </button>
 
               {/* Real-time Validation Hint */}
               {walletAddress && sharesToBuy > 0 && (
@@ -909,8 +994,8 @@ const INITIAL_BALANCE = 10000;
                       </td>
                     </tr>
                   ) : (
-                    history.map((tx) => (
-                      <tr key={tx.id}>
+                    history.map((tx, idx) => (
+                      <tr key={tx.id || `tx-${idx}`}>
                         <td data-label="Date">{tx.date}</td>
                         <td data-label="Investor">
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1085,8 +1170,8 @@ const INITIAL_BALANCE = 10000;
                       ) : (
                         history
                           .filter(tx => String(tx.buyerWallet || "").toLowerCase() === String(walletAddress || "").toLowerCase())
-                          .map(tx => (
-                            <tr key={tx.id}>
+                          .map((tx, idx) => (
+                            <tr key={tx.id || `personal-tx-${idx}`}>
                               <td data-label="Date">{tx.date}</td>
                               <td data-label="Property" style={{ fontWeight: '600' }}>
                                 {tx.type === 'distribute' ? `Distributed Yield (${tx.propertyName})` : tx.propertyName}
@@ -1132,10 +1217,10 @@ const INITIAL_BALANCE = 10000;
               {/* Add Property Panel */}
               <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '24px' }}>
                 <h3 style={{ marginBottom: '20px', color: '#60a5fa' }}>🏗 Add New Property</h3>
-                {[['Property Name', 'name', 'text', 'e.g. Sunset Villas'], ['Token Symbol', 'symbol', 'text', 'e.g. SSV'], ['Share Price (ETH)', 'sharePriceEth', 'number', '0.01'], ['Total Shares', 'totalShares', 'number', '100'], ['Location', 'location', 'text', 'e.g. Delhi, India'], ['Image URL', 'image', 'text', 'https://...'], ['Description', 'description', 'text', '...']].map(([label, key, type]) => (
-                  <div key={key} className="input-group" style={{ marginBottom: '12px' }}>
+                {[['Property Name', 'name', 'text', 'e.g. Sunset Villas'], ['Token Symbol', 'symbol', 'text', 'e.g. SSV'], ['Share Price (ETH)', 'sharePriceEth', 'number', '0.01'], ['Total Shares', 'totalShares', 'number', '100'], ['Location', 'location', 'text', 'e.g. Delhi, India'], ['Image URL', 'image', 'text', 'https://...'], ['Description', 'description', 'text', '...']].map(([label, fKey, type]) => (
+                  <div key={`input-${fKey}`} className="input-group" style={{ marginBottom: '12px' }}>
                     <label style={{ fontSize: '0.8rem' }}>{label}</label>
-                    <input type={type} value={adminForm[key]} onChange={e => setAdminForm(f => ({ ...f, [key]: e.target.value }))} style={{ padding: '8px 12px', fontSize: '0.9rem' }} />
+                    <input type={type} value={adminForm[fKey]} onChange={e => setAdminForm(f => ({ ...f, [fKey]: e.target.value }))} style={{ padding: '8px 12px', fontSize: '0.9rem' }} />
                   </div>
                 ))}
                 <button className="btn-primary" style={{ width: '100%', marginTop: '8px' }} onClick={handleAddProperty} disabled={adminStatus === 'processing' || !adminForm.name || !adminForm.symbol}>
@@ -1164,12 +1249,34 @@ const INITIAL_BALANCE = 10000;
                   {adminStatus === 'processing' ? 'Processing...' : 'Distribute Rent'}
                 </button>
 
+                {/* Assign Tenant Panel */}
+                <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '24px', marginTop: '24px' }}>
+                    <h3 style={{ marginBottom: '20px', color: '#f59e0b' }}>🏠 Assign Tenant</h3>
+                    <div className="input-group" style={{ marginBottom: '12px' }}>
+                      <label style={{ fontSize: '0.8rem' }}>Property</label>
+                      <select value={adminTenantForm.propertyId} onChange={e => setAdminTenantForm(f => ({ ...f, propertyId: e.target.value }))} style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '8px' }}>
+                        {properties.map(p => <option key={p.id} value={p.id}>#{p.id} — {p.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="input-group" style={{ marginBottom: '12px' }}>
+                      <label style={{ fontSize: '0.8rem' }}>Tenant Name</label>
+                      <input type="text" placeholder="e.g. John Doe" value={adminTenantForm.name} onChange={e => setAdminTenantForm(f => ({ ...f, name: e.target.value }))} />
+                    </div>
+                    <div className="input-group" style={{ marginBottom: '12px' }}>
+                      <label style={{ fontSize: '0.8rem' }}>Monthly Rent (ETH)</label>
+                      <input type="number" step="0.01" value={adminTenantForm.rentEth} onChange={e => setAdminTenantForm(f => ({ ...f, rentEth: e.target.value }))} />
+                    </div>
+                    <button className="btn-primary" style={{ width: '100%', background: 'linear-gradient(135deg, #f59e0b, #d97706)' }} onClick={handleSetTenant} disabled={adminStatus === 'processing' || !adminTenantForm.name}>
+                      {adminStatus === 'processing' ? 'Assigning...' : 'Assign Tenant'}
+                    </button>
+                </div>
+
                 {/* Properties overview table */}
                 <div style={{ marginTop: '28px' }}>
                   <h4 style={{ marginBottom: '12px', color: 'var(--text-muted)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Properties</h4>
-                  {properties.map((p, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.85rem' }}>
-                      <span>#{i} {p.name}</span>
+                   {properties.map((p) => (
+                    <div key={`active-prop-${p.id}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.85rem' }}>
+                      <span>#{p.id} {p.name}</span>
                       <span style={{ color: '#10b981' }}>{p.totalRentDistributed || '0'} ETH distributed</span>
                     </div>
                   ))}

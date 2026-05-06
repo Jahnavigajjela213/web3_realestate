@@ -8,10 +8,17 @@ export const contractAbi = [
   "function withdrawRent()",
   "function pendingWithdrawals(address user) view returns (uint256)",
   "function owner() view returns (address)",
+  
+  // 🏢 Tenant Layer Functions
+  "function setTenant(uint256 propertyId, string name, uint256 rentAmount)",
+  "function payRent(uint256 propertyId) payable",
+  "function tenants(uint256 propertyId) view returns (string name, uint256 rentAmount, bool isActive)",
+
   // Events.
   "event SharePurchased(uint256 propertyId, address buyer, uint256 shares, uint256 totalPaidWei)",
   "event RentDistributed(uint256 propertyId, uint256 totalAmount)",
-  "event RentClaimed(address user, uint256 amount)"
+  "event RentClaimed(address user, uint256 amount)",
+  "event TenantAssigned(uint256 propertyId, string name, uint256 rentAmount)"
 ];
 
 export const erc20Abi = [

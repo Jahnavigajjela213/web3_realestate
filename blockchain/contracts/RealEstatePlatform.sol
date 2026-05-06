@@ -37,19 +37,27 @@ contract RealEstatePlatform is Ownable {
         uint256 totalRentDistributed; 
     }
 
+    struct Tenant {
+        string name;
+        uint256 rentAmount;
+        bool isActive;
+    }
+
     Property[] public properties;
+    mapping(uint256 => Tenant) public tenants;
     
-    // Track investors for each property to allow looping (Simple approach)
+    // Track investors for each property to allow looping
     mapping(uint256 => address[]) public propertyInvestors;
     mapping(uint256 => mapping(address => bool)) private isInvestorInProperty;
 
-    // Pending withdrawals for each investor (across all properties)
+    // Pending withdrawals for each investor
     mapping(address => uint256) public pendingWithdrawals;
 
     event PropertyAdded(uint256 propertyId, string name, address tokenAddress);
     event SharePurchased(uint256 propertyId, address buyer, uint256 shares, uint256 totalPaidWei);
     event RentDistributed(uint256 propertyId, uint256 totalAmount);
     event RentClaimed(address user, uint256 amount);
+    event TenantAssigned(uint256 propertyId, string name, uint256 rentAmount);
 
     constructor() Ownable(msg.sender) {
         addProperty("Green Villa", "GRV", 0.01 ether, 100);
@@ -77,13 +85,37 @@ contract RealEstatePlatform is Ownable {
         emit PropertyAdded(properties.length - 1, _name, address(newToken));
     }
 
+    // 1. Admin function to assign tenant
+    function setTenant(
+        uint256 propertyId,
+        string memory name,
+        uint256 rentAmount
+    ) external onlyOwner {
+        require(propertyId < properties.length, "Invalid property");
+        tenants[propertyId] = Tenant(name, rentAmount, true);
+        emit TenantAssigned(propertyId, name, rentAmount);
+    }
+
+    // 2. Tenant rent payment function
+    function payRent(uint256 propertyId) external payable {
+        Tenant memory t = tenants[propertyId];
+        require(t.isActive, "No active tenant");
+        require(msg.value == t.rentAmount, "Incorrect rent amount");
+
+        _distribute(propertyId, msg.value);
+    }
+
     /**
-     * Distribute rent (ETH) to all investors based on their shares in a property.
+     * Admin: Distribute rent (ETH) manually if needed.
      */
     function distributeRent(uint256 propertyId) external payable onlyOwner {
         require(propertyId < properties.length, "Invalid property");
         require(msg.value > 0, "Rent must be > 0");
-        
+        _distribute(propertyId, msg.value);
+    }
+
+    // Internal function to handle distribution logic
+    function _distribute(uint256 propertyId, uint256 amount) internal {
         Property storage p = properties[propertyId];
         address[] memory investors = propertyInvestors[propertyId];
         
@@ -92,14 +124,13 @@ contract RealEstatePlatform is Ownable {
             uint256 userShares = IERC20(p.tokenAddress).balanceOf(investor);
             
             if (userShares > 0) {
-                // userShare = (userOwnedShares / totalShares) * totalRent
-                uint256 userShare = (userShares * msg.value) / p.totalShares;
+                uint256 userShare = (userShares * amount) / p.totalShares;
                 pendingWithdrawals[investor] += userShare;
             }
         }
         
-        p.totalRentDistributed += msg.value;
-        emit RentDistributed(propertyId, msg.value);
+        p.totalRentDistributed += amount;
+        emit RentDistributed(propertyId, amount);
     }
 
     /**
@@ -127,7 +158,6 @@ contract RealEstatePlatform is Ownable {
         require(p.sharesSold + shareCount <= p.totalShares, "Not enough shares");
         require(msg.value == p.sharePriceWei * shareCount, "Wrong ETH value");
 
-        // Add to investors list if not already there
         if (!isInvestorInProperty[propertyId][msg.sender]) {
             propertyInvestors[propertyId].push(msg.sender);
             isInvestorInProperty[propertyId][msg.sender] = true;

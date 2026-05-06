@@ -69,8 +69,9 @@ ERC20_ABI = [
 
 # Data Paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-PROPERTIES_FILE = os.path.join(DATA_DIR, "properties.json")
+PROPERTIES_METADATA_FILE = os.path.join(DATA_DIR, "properties.json")
 TRANSACTIONS_FILE = os.path.join(DATA_DIR, "transactions.json")
+SIMULATED_PROPERTIES_FILE = os.path.join(DATA_DIR, "simulated_properties.json")
 
 def load_json(path, default=[]):
     if not os.path.exists(path):
@@ -99,6 +100,22 @@ class TransactionInput(BaseModel):
 def health():
     return {"status": "ok", "framework": "FastAPI"}
 
+@app.post("/properties")
+def save_property_metadata(data: dict):
+    if data.get("isSimulated"):
+        simulated = load_json(SIMULATED_PROPERTIES_FILE)
+        # Generate a high ID for simulated property
+        next_id = 1000 + len(simulated)
+        data["id"] = next_id
+        simulated.append(data)
+        save_json(SIMULATED_PROPERTIES_FILE, simulated)
+        return {"status": "success", "id": next_id}
+    else:
+        metadata = load_json(PROPERTIES_METADATA_FILE)
+        metadata.append(data)
+        save_json(PROPERTIES_METADATA_FILE, metadata)
+        return {"status": "success"}
+
 @app.get("/properties")
 def get_properties():
     try:
@@ -110,7 +127,7 @@ def get_properties():
     contract = w3.eth.contract(address=checksum_contract, abi=PLATFORM_ABI)
     try:
         raw_props = contract.functions.getProperties().call()
-        metadata = load_json(PROPERTIES_FILE)
+        metadata = load_json(PROPERTIES_METADATA_FILE)
         txs = load_json(TRANSACTIONS_FILE)
         
         properties = []
@@ -133,7 +150,29 @@ def get_properties():
                 "totalRentDistributed": str(float(w3.from_wei(p[5], 'ether')) + mock_rent),
                 "location": meta.get("location", "Unknown"),
                 "image": meta.get("image", ""),
-                "description": meta.get("description", "")
+                "description": meta.get("description", ""),
+                "isSimulated": False
+            })
+
+        # Append Simulated Properties
+        simulated = load_json(SIMULATED_PROPERTIES_FILE)
+        for sp in simulated:
+            i = sp["id"]
+            mock_sold = sum(t.get("sharesToBuy", 0) for t in txs if int(t.get("propertyId")) == i and t.get("isMock") and t.get("type", "buy") == "buy")
+            mock_rent = sum(float(t.get("amountEth", 0)) for t in txs if int(t.get("propertyId")) == i and t.get("type") == "distribute")
+            
+            properties.append({
+                "id": i,
+                "name": sp["name"],
+                "sharePriceEth": sp["sharePriceEth"],
+                "totalShares": sp["totalShares"],
+                "sharesSold": mock_sold,
+                "availableShares": sp["totalShares"] - mock_sold,
+                "totalRentDistributed": str(mock_rent),
+                "location": sp.get("location", "Unknown"),
+                "image": sp.get("image", ""),
+                "description": sp.get("description", ""),
+                "isSimulated": True
             })
         return {"data": properties}
     except Exception as e:

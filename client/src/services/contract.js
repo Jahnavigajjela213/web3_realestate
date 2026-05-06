@@ -1,4 +1,4 @@
-import { BrowserProvider, Contract, JsonRpcProvider, formatEther } from "ethers";
+import { BrowserProvider, Contract, JsonRpcProvider, formatEther, parseEther } from "ethers";
 import { APP_CONFIG } from "../config/env";
 import { contractAbi, erc20Abi } from "../config/contractAbi";
 
@@ -28,36 +28,51 @@ async function getContractWithSigner(provider) {
 }
 
 /**
- * Fetch all properties from the chain.
- * availableShares = totalShares - sharesSold (computed from on-chain data)
+ * Fetch all properties from the chain + tenant info.
  */
 export async function fetchProperties() {
   const contract = getReadonlyContract();
   const raw = await contract.getProperties();
 
-  return raw.map((p, i) => {
+  const properties = [];
+  for (let i = 0; i < raw.length; i++) {
+    const p = raw[i];
     const totalShares = Number(p.totalShares);
     const sharesSold = Number(p.sharesSold);
     const availableShares = totalShares - sharesSold;
 
-    return {
+    // Fetch tenant info for this property
+    let tenantInfo = { name: "None", rentAmount: "0", isActive: false };
+    try {
+      const t = await contract.tenants(i);
+      tenantInfo = {
+        name: t.name,
+        rentAmount: formatEther(t.rentAmount),
+        isActive: t.isActive
+      };
+    } catch (e) {
+      console.warn(`Could not fetch tenant for property ${i}`);
+    }
+
+    properties.push({
       id: i,
       name: p.name,
       location: PROPERTY_LOCATIONS[i] || "India",
       image: PROPERTY_IMAGES[i] || PROPERTY_IMAGES[0],
       sharePriceWei: p.sharePriceWei.toString(),
-      // Display share price as ETH value (e.g. 0.01 ETH)
       sharePriceEth: formatEther(p.sharePriceWei),
       totalShares,
       sharesSold,
       availableShares,
-      tokenAddress: p.tokenAddress
-    };
-  });
+      tokenAddress: p.tokenAddress,
+      tenant: tenantInfo
+    });
+  }
+  return properties;
 }
 
 /**
- * Buy shares on-chain — mints ERC-20 tokens to the buyer's wallet.
+ * Buy shares on-chain.
  */
 export async function buySharesOnChain({ provider, propertyId, shareCount, sharePriceWei }) {
   if (!(provider instanceof BrowserProvider)) {
@@ -88,7 +103,6 @@ export async function getUserTokenBalance(tokenAddress, walletAddress) {
 
 /**
  * Withdraw accumulated rental yield for the user.
- * Called by token holders to withdraw their share of distributed rent.
  */
 export async function claimRentOnChain({ provider }) {
   if (!(provider instanceof BrowserProvider)) {
@@ -101,7 +115,7 @@ export async function claimRentOnChain({ provider }) {
 }
 
 /**
- * Fetch pending rent (withdrawals) for a specific user.
+ * Fetch pending rent for a user.
  */
 export async function fetchPendingRent(walletAddress) {
   const contract = getReadonlyContract();
@@ -110,7 +124,7 @@ export async function fetchPendingRent(walletAddress) {
 }
 
 /**
- * Fetch the admin (owner) of the RealEstatePlatform contract.
+ * Fetch the admin (owner).
  */
 export async function getContractOwner() {
   const contract = getReadonlyContract();
@@ -119,22 +133,44 @@ export async function getContractOwner() {
 }
 
 /**
- * ADMIN: Deploys a new ERC-20 property token on-chain.
+ * ADMIN: Assign a tenant to a property.
  */
-export async function addPropertyOnChain({ provider, name, symbol, sharePriceEth, totalShares }) {
+export async function setTenantOnChain({ provider, propertyId, name, rentEth }) {
   const contract = await getContractWithSigner(provider);
-  const sharePriceWei = (parseFloat(sharePriceEth) * 1e18).toString();
-  const tx = await contract.addProperty(name, symbol, BigInt(sharePriceWei), totalShares, { gasLimit: 3000000 });
+  const rentWei = parseEther(rentEth.toString());
+  const tx = await contract.setTenant(propertyId, name, rentWei);
   await tx.wait();
   return { txHash: tx.hash };
 }
 
 /**
- * ADMIN: Deposits rent (ETH) into a property's yield pool.
+ * TENANT: Pay rent for a property.
+ */
+export async function payRentOnChain({ provider, propertyId, rentEth }) {
+  const contract = await getContractWithSigner(provider);
+  const rentWei = parseEther(rentEth.toString());
+  const tx = await contract.payRent(propertyId, { value: rentWei });
+  await tx.wait();
+  return { txHash: tx.hash };
+}
+
+/**
+ * ADMIN: Deploys a new property token.
+ */
+export async function addPropertyOnChain({ provider, name, symbol, sharePriceEth, totalShares }) {
+  const contract = await getContractWithSigner(provider);
+  const sharePriceWei = parseEther(sharePriceEth.toString());
+  const tx = await contract.addProperty(name, symbol, sharePriceWei, totalShares, { gasLimit: 3000000 });
+  await tx.wait();
+  return { txHash: tx.hash };
+}
+
+/**
+ * ADMIN: Deposits rent (ETH) manually.
  */
 export async function distributeRentOnChain({ provider, propertyId, rentEth }) {
   const contract = await getContractWithSigner(provider);
-  const rentWei = BigInt(Math.floor(parseFloat(rentEth) * 1e18));
+  const rentWei = parseEther(rentEth.toString());
   const tx = await contract.distributeRent(propertyId, { value: rentWei, gasLimit: 300000 });
   await tx.wait();
   return { txHash: tx.hash };
