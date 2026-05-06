@@ -1,0 +1,20 @@
+[
+  {
+    "id": 0,
+    "location": "Bangalore, India",
+    "image": "https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?w=800&auto=format&fit=crop&q=80",
+    "description": "Premium 4BHK Villa with private pool in Sarjapur."
+  },
+  {
+    "id": 1,
+    "location": "Mumbai, India",
+    "image": "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&auto=format&fit=crop&q=80",
+    "description": "Luxury sea-facing apartment in Worli."
+  },
+  {
+    "id": 2,
+    "location": "Hyderabad, India",
+    "image": "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80",
+    "description": "High-yield commercial office space in HITEC City."
+  }
+]

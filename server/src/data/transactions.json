@@ -1,0 +1,83 @@
+[
+  {
+    "id": "874e4f1d-d98d-48cf-8f52-5a7c03c18121",
+    "createdAt": "2026-05-05T10:57:20.026Z",
+    "propertyId": 2,
+    "propertyName": "Downtown Office",
+    "sharesToBuy": 1,
+    "amountEth": "0.0300",
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x-mock-380296f0",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "d36783ea-a3cd-4efb-ad9e-da54695950b6",
+    "createdAt": "2026-05-05T10:50:56.206Z",
+    "propertyId": 0,
+    "propertyName": "Green Villa",
+    "sharesToBuy": 20,
+    "amountEth": "0.2000",
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x-mock-b00d5c74",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "28a3aac1-4c6f-4bb8-90c9-d388e89d59cf",
+    "createdAt": "2026-05-05T10:50:37.538Z",
+    "propertyId": 0,
+    "propertyName": "Green Villa",
+    "sharesToBuy": 20,
+    "amountEth": "0.2000",
+    "buyerWallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "txHash": "0x-mock-77a6f356",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "61b9f62c-f299-4f8e-abbd-5189ef7482f0",
+    "createdAt": "2026-05-05T10:49:39.045Z",
+    "propertyId": 1,
+    "propertyName": "Ocean Apartments",
+    "sharesToBuy": 1,
+    "amountEth": "0.0200",
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x-mock-8a293e91",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "4ad4002b-161c-4e6b-9d8f-b6b6164fff36",
+    "createdAt": "2026-05-05T10:35:50.917Z",
+    "propertyId": 0,
+    "propertyName": "Green Villa",
+    "sharesToBuy": 1,
+    "amountEth": "0.0100",
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x-mock-35f7a408",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "c687d854-8123-49d5-bce4-06018603af1f",
+    "createdAt": "2026-05-05T10:34:25.758Z",
+    "propertyId": 1,
+    "propertyName": "Ocean Apartments",
+    "sharesToBuy": 1,
+    "amountEth": "0.0200",
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x-mock-aba1a55a",
+    "blockNumber": 0,
+    "isMock": true
+  },
+  {
+    "id": "f3b27c97-618e-49d8-8ff9-2bf65af61c60",
+    "createdAt": "2026-05-05T06:23:24.855Z",
+    "propertyId": 0,
+    "sharesToBuy": 1,
+    "buyerWallet": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "txHash": "0x1377cdd9ef3949100cea512a64a4cfc123bae7c50374b6a7c864ca33b77a1801",
+    "blockNumber": 2
+  }
+]
