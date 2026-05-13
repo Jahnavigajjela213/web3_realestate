@@ -1,8 +1,18 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { BrowserProvider } from "ethers";
 import { buySharesOnChain, getContractOwner, addPropertyOnChain, distributeRentOnChain, claimRentOnChain, fetchPendingRent, setTenantOnChain, payRentOnChain } from "./services/contract";
 import { fetchProperties, fetchUserPortfolio, savePropertyMetadata } from "./services/api";
 import { APP_CONFIG } from "./config/env";
+import Login from "./pages/Login";
+import ProtectedRoute from "./components/ProtectedRoute";
+import AdminDashboard from "./pages/AdminDashboard";
+import TenantDashboard from "./pages/TenantDashboard";
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
+  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area
+} from "recharts";
+import { Wallet, PieChart as PieChartIcon, Home, DollarSign, TrendingUp, Calendar, RefreshCw, BarChart2, History } from "lucide-react";
 
 export default function App() {
   const [walletAddress, setWalletAddress] = useState("");
@@ -45,7 +55,36 @@ const INITIAL_BALANCE = 10000;
   // Navigation State: 'home', 'details', 'buy', 'history'
   const [currentPage, setCurrentPage] = useState("home");
   const [selectedProperty, setSelectedProperty] = useState(null);
-  const [theme, setTheme] = useState("dark"); // 'dark' or 'light'
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem("theme") || "dark";
+  });
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+
+  // Initialize from storage
+  useEffect(() => {
+    const savedAddr = localStorage.getItem("walletAddress");
+    const savedRole = localStorage.getItem("role");
+    if (savedAddr) {
+      setWalletAddress(savedAddr);
+      const idx = DEMO_ADDRESSES.indexOf(savedAddr);
+      if (idx !== -1) setSelectedInvestorName(DEMO_NAMES[idx]);
+      
+      // If was connected via MetaMask, re-init provider
+      if (localStorage.getItem("loginMethod") === "metamask" && window.ethereum) {
+        setProvider(new BrowserProvider(window.ethereum));
+      }
+    }
+  }, []);
+
+  const handleLoginSuccess = (addr, role, prov) => {
+    setWalletAddress(addr);
+    setIsAdmin(role === "Admin");
+    setProvider(prov);
+    localStorage.setItem("role", role);
+    localStorage.setItem("walletAddress", addr);
+    const idx = DEMO_ADDRESSES.indexOf(addr);
+    if (idx !== -1) setSelectedInvestorName(DEMO_NAMES[idx]);
+  };
 
   // Buy State
   const [sharesToBuy, setSharesToBuy] = useState(1);
@@ -72,7 +111,8 @@ const INITIAL_BALANCE = 10000;
   // Load properties from chain: availableShares = totalShares - sharesSold
   // -------------------------------------------------------------------
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem("theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
   const loadProperties = useCallback(async () => {
@@ -99,6 +139,7 @@ const INITIAL_BALANCE = 10000;
       if (result.data) {
         setHistory(result.data.map(tx => ({
           id: tx.id,
+          propertyId: tx.propertyId,
           date: new Date(tx.createdAt).toLocaleDateString("en-GB").replace(/\//g, "-"),
           propertyName: tx.propertyName,
           investor: tx.buyerName || "Investor",
@@ -132,7 +173,7 @@ const INITIAL_BALANCE = 10000;
   // Load portfolio (ERC-20 balances)
   // -------------------------------------------------------------------
   const loadPortfolio = useCallback(async () => {
-    if (!walletAddress || properties.length === 0) return;
+    if (!walletAddress) return;
     setLoadingPortfolio(true);
     try {
       const response = await fetch(`${APP_CONFIG.apiBaseUrl}/portfolio/${walletAddress}`);
@@ -180,21 +221,40 @@ const INITIAL_BALANCE = 10000;
     // Hybrid Balance Logic:
     // If Demo Mode: Start at 10,000 ETH and subtract all mock purchases in history
     if (!provider && walletAddress && history.length > 0) {
+      // 1. Calculate spent amount (purchases I made)
       const mockSpent = history
         .filter(tx => tx.buyerWallet && String(tx.buyerWallet).toLowerCase() === String(walletAddress).toLowerCase())
         .reduce((acc, tx) => {
           const amount = parseFloat(tx.amountEth || 0);
-          if (tx.type === "buy") return acc + amount;
-          if (tx.type === "claim") return acc - amount;
+          if (tx.type === "buy" || tx.type === "rent") return acc + amount;
           return acc;
         }, 0);
 
-      setCurrentBalance(10000 - mockSpent);
+      // 2. Calculate earned amount (my share of global rent distributions)
+      const mockEarned = history
+        .filter(tx => tx.type === "distribute" || tx.type === "rent" || tx.type === "claim")
+        .reduce((acc, tx) => {
+          const amount = parseFloat(tx.amountEth || 0);
+          if (tx.type === "claim" && tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase()) {
+            return acc + amount;
+          }
+          if (tx.type === "distribute" || tx.type === "rent") {
+            // Find if I own shares in this property to get my cut
+            const prop = portfolio.find(p => p.propertyId === tx.propertyId);
+            if (prop && prop.sharesOwned > 0) {
+              const myShare = (prop.sharesOwned / (prop.totalShares || 100)) * amount;
+              return acc + myShare;
+            }
+          }
+          return acc;
+        }, 0);
+
+      setCurrentBalance(10000 - mockSpent + mockEarned);
     } else if (!provider && walletAddress && history.length === 0) {
       // Default to 10k if no history loaded yet
       setCurrentBalance(10000);
     }
-  }, [history, walletAddress, provider]);
+  }, [history, walletAddress, provider, portfolio]);
 
   // Helper: convert ETH string to INR display
   const toInr = (ethAmount) => {
@@ -279,6 +339,12 @@ const INITIAL_BALANCE = 10000;
       setBuyStatus({ state: "error", message: "Please connect your wallet first." });
       return;
     }
+
+    if (!sharesToBuy || sharesToBuy <= 0 || sharesToBuy > selectedProperty.availableShares) {
+      setBuyStatus({ state: "error", message: "Invalid number of shares." });
+      return;
+    }
+
     // SIMULATED BUY (Demo Mode)
     if (!provider) {
       setBuyStatus({ state: "processing", message: "Simulating blockchain transaction..." });
@@ -422,7 +488,7 @@ const INITIAL_BALANCE = 10000;
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             propertyId: entry.propertyId,
-            propertyName: `Rental Income (${entry.name})`,
+            propertyName: entry.name,
             sharesToBuy: entry.shares,
             amountEth: entry.amount,
             buyerWallet: walletAddress,
@@ -642,41 +708,36 @@ const INITIAL_BALANCE = 10000;
     }
   };
 
-  // -------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------
-  return (
-    <div className="app-shell">
-      {/* Rent Notification */}
-      {notification.show && (
-        <div style={{
-          position: 'fixed',
-          top: '20px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'linear-gradient(135deg, #10b981, #059669)',
-          color: 'white',
-          padding: '16px 32px',
-          borderRadius: '12px',
-          boxShadow: '0 10px 25px -5px rgba(16, 185, 129, 0.4)',
-          zIndex: 10000,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          animation: 'slideDown 0.4s ease-out'
-        }}>
-          <span style={{ fontSize: '1.5rem' }}>💰</span>
-          <div>
-            <div style={{ fontWeight: 'bold', fontSize: '1rem' }}>Income Received!</div>
-            <div style={{ fontSize: '0.85rem', opacity: 0.9 }}>{notification.message}</div>
-          </div>
-          <button onClick={() => setNotification({ show: false, message: "" })} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', marginLeft: '12px', opacity: 0.7 }}>✕</button>
-        </div>
-      )}
 
-      {/* Topbar Navigation */}
+  // -------------------------------------------------------------------
+  // Sub-components for Routing
+  // -------------------------------------------------------------------
+  
+  const Navbar = () => {
+    const navigate = useNavigate();
+    const location = useLocation();
+    const role = localStorage.getItem("role");
+    const [showDropdown, setShowDropdown] = useState(false);
+
+    const handleAccountSwitch = (address, index) => {
+      setWalletAddress(address);
+      setSelectedInvestorName(DEMO_NAMES[index]);
+      localStorage.setItem("walletAddress", address);
+      
+      // Update role based on index: idx < 4 is Admin, idx < 12 is Investor, else Tenant
+      const newRole = index < 4 ? "Admin" : index < 12 ? "Investor" : "Tenant";
+      localStorage.setItem("role", newRole);
+      setIsAdmin(newRole === "Admin");
+
+      setShowDropdown(false);
+      loadPortfolio();
+      loadProperties();
+      loadHistory(); // Reload history to apply new role formatting
+    };
+
+    return (
       <header className="topbar">
-        <div className="logo-section" onClick={() => navigateTo("home")} style={{ cursor: "pointer", display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div className="logo-section" onClick={() => navigate("/")} style={{ cursor: "pointer", display: 'flex', alignItems: 'center', gap: '12px' }}>
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="url(#blue-gradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <defs>
               <linearGradient id="blue-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -687,605 +748,765 @@ const INITIAL_BALANCE = 10000;
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
             <polyline points="9 22 9 12 15 12 15 22"></polyline>
           </svg>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>Web3 Real Estate</h1>
+          <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>EstateChain</h1>
         </div>
 
         <nav className={`nav-links ${menuOpen ? "active" : ""}`} style={{ gap: '24px' }}>
-          <span className={`nav-link ${currentPage === "home" ? "active" : ""}`} onClick={() => { navigateTo("home"); setMenuOpen(false); }}>Properties</span>
-          <span className={`nav-link ${currentPage === "portfolio" ? "active" : ""}`} onClick={() => { navigateTo("portfolio"); setMenuOpen(false); }}>My Portfolio</span>
-          <span className={`nav-link ${currentPage === "history" ? "active" : ""}`} onClick={() => { navigateTo("history"); setMenuOpen(false); }}>Transactions</span>
-          {isAdmin && <span className={`nav-link ${currentPage === "admin" ? "active" : ""}`} style={{ color: '#f59e0b' }} onClick={() => { navigateTo("admin"); setMenuOpen(false); }}>⚙ Admin</span>}
+          {role === "Investor" && (
+            <>
+              <span className={`nav-link ${location.pathname === "/properties" ? "active" : ""}`} onClick={() => { navigate("/properties"); setMenuOpen(false); }}>Marketplace</span>
+              <span className={`nav-link ${location.pathname === "/portfolio" ? "active" : ""}`} onClick={() => { navigate("/portfolio"); setMenuOpen(false); }}>Portfolio</span>
+            </>
+          )}
+          {role === "Admin" && (
+            <>
+              <span className={`nav-link ${location.pathname === "/history" ? "active" : ""}`} onClick={() => { navigate("/history"); setMenuOpen(false); }}>Activity</span>
+              <span className={`nav-link ${location.pathname === "/admin" ? "active" : ""}`} style={{ color: '#f59e0b' }} onClick={() => { navigate("/admin"); setMenuOpen(false); }}>Dashboard</span>
+            </>
+          )}
+          {role === "Tenant" && <span className={`nav-link ${location.pathname === "/tenant" ? "active" : ""}`} style={{ color: '#10b981' }} onClick={() => { navigate("/tenant"); setMenuOpen(false); }}>My Lease</span>}
         </nav>
 
         <div className="header-actions" style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            <button 
-              className="hamburger" 
-              onClick={() => setMenuOpen(!menuOpen)}
-              style={{ padding: '8px', fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer', color: 'white' }}
-            >
-              ☰
-            </button>
-            <button 
-              className="btn-secondary" 
-              style={{ padding: '8px', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}
-              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            >
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
-
-            {walletAddress ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <div className="wallet-info" style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(255,255,255,0.05)', padding: '6px 12px', borderRadius: '12px', border: '1px solid var(--border)' }}>
-                <div style={{ color: '#10b981', fontWeight: '600', fontSize: '0.9rem' }}>{currentBalance.toLocaleString()} ETH</div>
-                <div className="wallet-info-text" style={{ width: '1px', height: '16px', background: 'var(--border)' }}></div>
-                <div className="wallet-info-text" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                  {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
+            <div className="account-dropdown">
+              <div className="dropdown-trigger" onClick={() => setShowDropdown(!showDropdown)}>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{selectedInvestorName || "Account"}</div>
+                  <div style={{ fontWeight: 'bold', color: '#6366f1' }}>{currentBalance.toLocaleString()} ETH</div>
                 </div>
+                <div className={`role-badge ${role?.toLowerCase()}`}>{role}</div>
+                <span>▼</span>
               </div>
-              <button className="wallet-btn" style={{ padding: '8px 16px', fontSize: '0.85rem' }} onClick={() => setWalletAddress("")}>Disconnect</button>
+              
+              {showDropdown && (
+                <div className="dropdown-menu">
+                  <div style={{ padding: '12px', fontSize: '0.8rem', borderBottom: '1px solid var(--border)', fontWeight: 'bold', color: 'var(--text-muted)' }}>
+                    Switch Account (Demo)
+                  </div>
+                  {DEMO_ADDRESSES.map((addr, idx) => {
+                    const accRole = idx < 4 ? "Admin" : idx < 12 ? "Investor" : "Tenant";
+                    if (accRole !== role) return null; // Only show accounts for current role
+                    
+                    return (
+                      <div 
+                        key={idx} 
+                        className={`dropdown-item ${walletAddress === addr ? "active" : ""}`}
+                        onClick={() => handleAccountSwitch(addr, idx)}
+                      >
+                        <span className="acc-name">{DEMO_NAMES[idx]}</span>
+                        <span className="acc-addr">{addr.slice(0, 10)}...{addr.slice(-6)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          ) : (
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <button className="btn-demo-small" style={{ background: '#f59e0b', color: 'black' }} onClick={connectDemoAdmin}>Demo: Admin</button>
-              <select 
-                className="demo-select" 
-                onChange={(e) => connectDemoInvestor(parseInt(e.target.value))}
-                defaultValue=""
-              >
-                <option value="" disabled>Demo: Select Investor</option>
-                {DEMO_NAMES.map((name, i) => (
-                  <option key={i + 1} value={i + 1}>{name}</option>
-                ))}
-              </select>
-              <button className="wallet-btn" onClick={connectWallet}>Connect Wallet</button>
-            </div>
-          )}
+
+            <button className="btn-secondary" onClick={() => { setWalletAddress(""); localStorage.clear(); navigate("/"); }}>Logout</button>
         </div>
       </header>
+    );
+  };
 
-      {walletError && (
-        <div style={{
-          position: 'fixed',
-          top: '80px',
-          right: '20px',
-          fontSize: "0.72rem",
-          color: "#f87171",
-          background: "rgba(248,113,113,0.1)",
-          border: "1px solid rgba(248,113,113,0.3)",
-          borderRadius: "6px",
-          padding: "4px 10px",
-          maxWidth: "260px",
-          textAlign: "right",
-          animation: "fadeIn 0.2s ease",
-          zIndex: 1000
-        }}>
-          ⚠️ {walletError}
-        </div>
-      )}
+  const PropertiesView = () => {
+    const navigate = useNavigate();
+    const isDark = theme === 'dark';
+    const textMuted = isDark ? '#94a3b8' : '#64748b';
+    const borderColor = isDark ? 'rgba(255,255,255,0.08)' : '#e2e8f0';
 
-      {/* Pages */}
-      <main>
-        {/* HOME */}
-        {currentPage === "home" && (
-          <div className="page-home">
-            <h2 className="page-header">Available Properties</h2>
-
-            {loading && <p style={{ color: "var(--text-muted)", textAlign: "center", padding: "48px" }}>Loading from blockchain...</p>}
-            {loadError && (
-              <div style={{ color: "#f87171", textAlign: "center", padding: "32px" }}>
-                <p>{loadError}</p>
-                <button className="btn-secondary" style={{ marginTop: "12px" }} onClick={loadProperties}>Retry</button>
-              </div>
-            )}
-
-            {!loading && !loadError && (
-              <div className="grid">
-                {properties.map((property) => {
-                  // availableShares derived from chain: totalShares - sharesSold
-                  const availableShares = property.availableShares;
-                  const soldPct = Math.round((property.sharesSold / property.totalShares) * 100);
-
-                  return (
-                    <div key={property.id} className="card">
-                      <div className="card-image">
-                        <img src={property.image} alt={property.name} />
+    return (
+      <div className="page-home">
+        <h2 className="page-header">Available Properties</h2>
+        {loading && <p style={{ color: "var(--text-muted)", textAlign: "center", padding: "48px" }}>Loading from blockchain...</p>}
+        {loadError && (
+          <div style={{ color: "#f87171", textAlign: "center", padding: "32px" }}>
+            <p>{loadError}</p>
+            <button className="btn-secondary" style={{ marginTop: "12px" }} onClick={loadProperties}>Retry</button>
+          </div>
+        )}
+        {!loading && !loadError && (
+          <div 
+            className="admin-investor-scroll" 
+            style={{ 
+              maxHeight: '620px', 
+              overflowY: 'auto', 
+              paddingRight: '8px',
+              paddingBottom: '20px'
+            }}
+          >
+            <div 
+              style={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', 
+                gap: '16px' 
+              }}
+            >
+              {[...properties].sort((a, b) => Number(a.id) - Number(b.id)).map((property) => {
+                const availableShares = property.availableShares;
+                const soldPct = Math.round((property.sharesSold / property.totalShares) * 100);
+                return (
+                  <div key={property.id} className="card" style={{ borderRadius: '16px' }}>
+                    <div className="card-image" style={{ height: '140px' }}>
+                      <img src={property.image} alt={property.name} style={{ opacity: 1 }} />
+                    </div>
+                    <div className="card-content" style={{ padding: '15px' }}>
+                      <div className="card-title" style={{ fontSize: '1rem', marginBottom: '4px' }}>{property.name}</div>
+                      <div className="card-location" style={{ fontSize: '0.8rem', marginBottom: '12px' }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                          <circle cx="12" cy="10" r="3"></circle>
+                        </svg>
+                        {property.location}
                       </div>
-                      <div className="card-content">
-                        <div className="card-title">{property.name}</div>
-                        <div className="card-location">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-                            <circle cx="12" cy="10" r="3"></circle>
-                          </svg>
-                          {property.location}
+                      
+                      <div style={{ 
+                        background: isDark ? 'rgba(0,0,0,0.2)' : '#f8fafc', 
+                        padding: '10px', 
+                        borderRadius: '10px', 
+                        marginBottom: '12px',
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '8px'
+                      }}>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontSize: '0.7rem', color: textMuted }}>Price</span>
+                          <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>{property.sharePriceEth} ETH</span>
                         </div>
-                        <div className="card-stats">
-                          <div className="stat-item">
-                            <span className="stat-label">Share Price</span>
-                            <span className="stat-value">
-                              {property.sharePriceEth} ETH
-                              {ethInr && <span style={{ display: "block", fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 400 }}>{toInr(property.sharePriceEth)}</span>}
-                            </span>
-                          </div>
-                          <div className="stat-item">
-                            <span className="stat-label">Shares Left</span>
-                            <span className="stat-value">{availableShares} / {property.totalShares}</span>
-                          </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontSize: '0.7rem', color: textMuted }}>Left</span>
+                          <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>{availableShares}/{property.totalShares}</span>
                         </div>
-                        {/* Progress bar */}
-                        <div style={{ margin: "8px 0 12px", background: "rgba(255,255,255,0.08)", borderRadius: "4px", height: "6px" }}>
-                          <div style={{ width: `${soldPct}%`, background: "linear-gradient(90deg, #60a5fa, #a78bfa)", borderRadius: "4px", height: "6px", transition: "width 0.4s" }} />
-                        </div>
-                        <div className="card-actions">
-                          <button className="btn-secondary" onClick={() => navigateTo("details", property)}>View Details</button>
-                          <button className="btn-primary" disabled={availableShares === 0} onClick={() => navigateTo("buy", property)}>
-                            {availableShares === 0 ? "Sold Out" : "Buy"}
-                          </button>
-                        </div>
+                      </div>
+
+                      <div style={{ margin: "0 0 12px", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", borderRadius: "4px", height: "4px" }}>
+                        <div style={{ width: `${soldPct}%`, background: "linear-gradient(90deg, #3b82f6, #8b5cf6)", borderRadius: "4px", height: "4px", transition: "width 0.4s" }} />
+                      </div>
+
+                      <div className="card-actions" style={{ gap: '8px' }}>
+                        <button className="btn-secondary" style={{ padding: '8px', fontSize: '0.8rem' }} onClick={() => { setSelectedProperty(property); navigate(`/details/${property.id}`); }}>Details</button>
+                        <button className="btn-primary" style={{ padding: '8px', fontSize: '0.8rem' }} disabled={availableShares === 0} onClick={() => { setSelectedProperty(property); navigate(`/buy/${property.id}`); }}>
+                          {availableShares === 0 ? "Sold" : "Buy"}
+                        </button>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const DetailsView = () => {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const property = properties.find(p => p.id === parseInt(id)) || selectedProperty;
+
+    if (!property) return <div style={{ textAlign: 'center', padding: '50px' }}>Property not found. <button onClick={() => navigate('/properties')}>Go Back</button></div>;
+
+    return (
+      <div className="page-details">
+        <div className="page-header">
+          <button className="back-btn" onClick={() => navigate("/properties")}>← Back</button>
+          <h2>Property Details</h2>
+        </div>
+        <div className="details-container">
+          <div className="details-image"><img src={property.image} alt={property.name} /></div>
+          <div className="details-info">
+            <h2>{property.name}</h2>
+            <div className="card-location" style={{ fontSize: "1.1rem", marginBottom: "24px" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                <circle cx="12" cy="10" r="3"></circle>
+              </svg>
+              {property.location}
+            </div>
+            <div className="details-stats">
+              <div className="details-stat-box"><div className="label">Share Price</div><div className="value">{property.sharePriceEth} ETH</div></div>
+              <div className="details-stat-box"><div className="label">Total Shares</div><div className="value">{property.totalShares}</div></div>
+              <div className="details-stat-box"><div className="label">Shares Sold</div><div className="value">{property.sharesSold}</div></div>
+              <div className="details-stat-box"><div className="label">Available Shares</div><div className="value">{property.availableShares}</div></div>
+            </div>
+            <button className="btn-primary" style={{ padding: "16px", fontSize: "1.1rem", marginTop: "auto" }} disabled={property.availableShares === 0} onClick={() => navigate(`/buy/${property.id}`)}>
+              {property.availableShares === 0 ? "Sold Out" : "Buy Shares Now"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const BuyView = () => {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const property = properties.find(p => p.id === parseInt(id)) || selectedProperty;
+
+    if (!property) return <div style={{ textAlign: 'center', padding: '50px' }}>Property not found.</div>;
+
+    return (
+      <div className="page-buy">
+        <div className="page-header">
+          <button className="back-btn" onClick={() => navigate(`/details/${id}`)}>← Back</button>
+          <h2>Buy Shares — {property.name}</h2>
+        </div>
+        <div className="buy-container">
+          <div className="buy-summary">
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}><span style={{ color: "var(--text-muted)" }}>Share Price</span><span style={{ fontWeight: "600" }}>{property.sharePriceEth} ETH</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}><span style={{ color: "var(--text-muted)" }}>Available Shares</span><span style={{ fontWeight: "600" }}>{property.availableShares}</span></div>
+          </div>
+          <div className="input-group">
+            <label>Enter Number of Shares</label>
+            <input 
+              type="number" 
+              min="1" 
+              max={property.availableShares} 
+              value={sharesToBuy} 
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '') {
+                  setSharesToBuy('');
+                } else {
+                  const num = parseInt(val);
+                  if (!isNaN(num)) {
+                    setSharesToBuy(Math.min(property.availableShares, num));
+                  }
+                }
+              }} 
+            />
+            <div className="total-cost" style={{ marginTop: '20px' }}>
+              <span className="total-cost-label">Total Price</span>
+              <span className="total-cost-value">{((sharesToBuy || 0) * parseFloat(property.sharePriceEth)).toFixed(3)} ETH</span>
+            </div>
+            <button className="btn-primary" style={{ width: "100%", padding: "16px" }} onClick={handleBuy} disabled={buyStatus.state === "processing" || !sharesToBuy || sharesToBuy <= 0}>
+              {buyStatus.state === "processing" ? "Processing..." : `Buy ${sharesToBuy || 0} Shares`}
+            </button>
+          </div>
+          {buyStatus.state !== "idle" && <div className={`status-msg ${buyStatus.state}`}>{buyStatus.message}</div>}
+        </div>
+      </div>
+    );
+  };
+
+  const HistoryView = () => (
+    <div className="page-history">
+      <h2 className="page-header">Transaction History</h2>
+      <div className="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Participant</th>
+              <th>Property</th>
+              <th>Shares</th>
+              <th>Amount (ETH)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.length === 0 ? <tr><td colSpan="7" style={{ textAlign: "center", padding: "32px" }}>No transactions yet.</td></tr> : (
+              history.map((tx, idx) => (
+                <tr key={idx}>
+                  <td>{tx.date}</td>
+                  <td>
+                    <span className={`status-badge ${tx.type || 'buy'}`} style={{ 
+                      background: tx.type === 'rent' ? 'rgba(59, 130, 246, 0.1)' : tx.type === 'claim' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(139, 92, 246, 0.1)',
+                      color: tx.type === 'rent' ? '#3b82f6' : tx.type === 'claim' ? '#10b981' : '#a78bfa',
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.75rem',
+                      textTransform: 'uppercase',
+                      fontWeight: 'bold'
+                    }}>
+                      {tx.type || 'buy'}
+                    </span>
+                  </td>
+                  <td>{tx.buyerName || tx.investor || "Anonymous"}</td>
+                  <td>{tx.type === 'rent' && localStorage.getItem("role") === "Investor" ? `Rental Income (${tx.propertyName})` : (tx.type === 'distribute' && localStorage.getItem("role") === "Investor" ? `Rental Income (${tx.propertyName})` : tx.propertyName)}</td>
+                  <td>{tx.shares || "-"}</td>
+                  <td style={{ 
+                    fontWeight: '600',
+                    color: (tx.type === 'claim' || (localStorage.getItem("role") === "Investor" && (tx.type === 'distribute' || tx.type === 'rent') && tx.buyerWallet?.toLowerCase() !== walletAddress.toLowerCase())) ? '#10b981' : '#f87171'
+                  }}>
+                    {(tx.type === 'claim' || (localStorage.getItem("role") === "Investor" && (tx.type === 'distribute' || tx.type === 'rent') && tx.buyerWallet?.toLowerCase() !== walletAddress.toLowerCase())) ? '+' : '-'}
+                    {localStorage.getItem("role") === "Investor" && (tx.type === 'distribute' || tx.type === 'rent') && tx.buyerWallet?.toLowerCase() !== walletAddress.toLowerCase()
+                      ? (() => {
+                          const prop = portfolio.find(p => p.propertyId === tx.propertyId);
+                          if (!prop) return "0.0000";
+                          const myShare = (prop.sharesOwned / (prop.totalShares || 100)) * parseFloat(tx.amountEth);
+                          return myShare.toFixed(4);
+                        })()
+                      : parseFloat(tx.amountEth).toFixed(4)} ETH
+                  </td>
+                  <td><span style={{ color: '#10b981' }}>✔ Success</span></td>
+                </tr>
+              ))
             )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const PortfolioView = () => {
+    const navigate = useNavigate();
+    
+    const [selectedPropertyId, setSelectedPropertyId] = useState(null);
+    const isDark = theme === 'dark';
+    const bgColor = isDark ? 'rgba(15, 23, 42, 0.9)' : '#f8fafc';
+    const cardBg = isDark ? 'rgba(30, 41, 59, 0.7)' : '#ffffff';
+    const textColor = isDark ? '#f8fafc' : '#1e293b';
+    const textMuted = isDark ? '#94a3b8' : '#64748b';
+    const borderColor = isDark ? 'rgba(255,255,255,0.08)' : '#e2e8f0';
+    const hoverBg = isDark ? 'rgba(255,255,255,0.05)' : '#f1f5f9';
+
+    // Memoized data for rental income analytics
+    const rentalIncomeData = useMemo(() => {
+      return portfolio
+        .filter(p => p.sharesOwned > 0)
+        .map(item => {
+          const userClaims = history.filter(tx => 
+            tx.propertyId === item.propertyId && 
+            (tx.type === 'claim' || tx.type === 'distribute' || tx.type === 'rent') && 
+            (tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase() || tx.type === 'distribute' || tx.type === 'rent')
+          );
+          const totalRent = userClaims.reduce((acc, tx) => {
+            const amount = parseFloat(tx.amountEth || 0);
+            if (tx.type === 'distribute' || tx.type === 'rent') {
+              // Pro-rate the total distribution based on ownership at that time
+              const ownership = (item.sharesOwned / (item.totalShares || 100));
+              return acc + (amount * ownership);
+            }
+            return acc + amount;
+          }, 0);
+          const lastClaim = userClaims.length > 0 ? userClaims[0] : null;
+          
+          return {
+            name: item.name && item.name.length > 10 ? item.name.substring(0, 10) + '…' : (item.name || 'Property'),
+            fullName: item.name,
+            value: parseFloat(totalRent.toFixed(4)),
+            lastRent: lastClaim ? lastClaim.amountEth : "0.0000",
+            ownershipPct: item.totalShares > 0 ? ((item.sharesOwned / item.totalShares) * 100).toFixed(1) : 0,
+            propertyId: item.propertyId
+          };
+        });
+    }, [portfolio, history, walletAddress]);
+    return (
+      <div className="page-portfolio" style={{ 
+        padding: '24px', 
+        maxWidth: '1400px', 
+        margin: '0 auto', 
+        background: bgColor, 
+        minHeight: '100vh',
+        color: textColor,
+        fontFamily: "'Inter', sans-serif",
+        transition: 'all 0.3s ease'
+      }}>
+        <style>{`
+          @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+          .portfolio-table th { text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.5px; color: ${textMuted}; padding: 12px 16px; border-bottom: 2px solid ${borderColor}; font-weight: 700; }
+          .portfolio-table td { padding: 12px 16px; border-bottom: 1px solid ${borderColor}; vertical-align: middle; }
+          .portfolio-table tr:hover { background: ${hoverBg}; cursor: pointer; }
+          .portfolio-table tr.selected { background: ${isDark ? 'rgba(59, 130, 246, 0.1)' : '#eff6ff'}; border-left: 4px solid #3b82f6; }
+          .light-card { background: ${cardBg}; border: 1px solid ${borderColor}; border-radius: 16px; box-shadow: ${isDark ? '0 10px 30px rgba(0,0,0,0.5)' : '0 4px 6px -1px rgba(0, 0, 0, 0.05)'}; transition: transform 0.2s ease, box-shadow 0.2s ease; backdrop-filter: blur(10px); }
+          .light-card:hover { box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2); }
+          .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+          .custom-scrollbar::-webkit-scrollbar-thumb { background: ${isDark ? 'rgba(255,255,255,0.1)' : '#cbd5e1'}; border-radius: 10px; }
+
+          .tx-table th { font-size: 0.6rem; color: ${textMuted}; text-transform: uppercase; padding: 8px; border-bottom: 1px solid ${borderColor}; }
+          .tx-table td { font-size: 0.75rem; padding: 8px; color: ${textColor}; border-bottom: 1px solid ${borderColor}; white-space: nowrap; }
+        `}</style>
+
+        {/* HEADER */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <div>
+            <h2 style={{ fontSize: '1.75rem', margin: 0, fontWeight: '800', color: isDark ? '#fff' : '#0f172a', letterSpacing: '-0.025em' }}>Portfolio Overview</h2>
+            <p style={{ color: textMuted, margin: '2px 0 0', fontSize: '0.875rem' }}>Track and manage your fractional real estate investments</p>
           </div>
-        )}
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <button style={{ padding: '10px', borderRadius: '12px', border: `1px solid ${borderColor}`, background: isDark ? 'rgba(255,255,255,0.05)' : '#fff', color: textMuted, cursor: 'pointer' }} onClick={loadPortfolio} title="Refresh Data">
+              <RefreshCw size={18} />
+            </button>
+          </div>
+        </div>
 
-        {/* DETAILS */}
-        {currentPage === "details" && selectedProperty && (
-          <div className="page-details">
-            <div className="page-header">
-              <button className="back-btn" onClick={() => navigateTo("home")}>← Back</button>
-              <h2>Property Details</h2>
-            </div>
-
-            <div className="details-container">
-              <div className="details-image">
-                <img src={selectedProperty.image} alt={selectedProperty.name} />
+        {/* ROW 1: GRAPHS */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px', marginBottom: '24px' }}>
+          {/* OWNERSHIP DISTRIBUTION */}
+          <div className="light-card" style={{ padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+              <div style={{ padding: '8px', borderRadius: '8px', background: isDark ? 'rgba(59, 130, 246, 0.1)' : '#eff6ff', color: '#3b82f6' }}>
+                <TrendingUp size={18} />
               </div>
-              <div className="details-info">
-                <h2>{selectedProperty.name}</h2>
-                <div className="card-location" style={{ fontSize: "1.1rem", marginBottom: "24px" }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-                    <circle cx="12" cy="10" r="3"></circle>
-                  </svg>
-                  {selectedProperty.location}
-                </div>
-
-                <p style={{ color: "var(--text-muted)", lineHeight: "1.6", marginBottom: "24px" }}>
-                  Fractional real estate ownership — earn passive income and benefit from property appreciation.
-                  Each token you hold represents 1 share, minted directly to your wallet on-chain.
-                </p>
-
-                <div className="details-stats">
-                  <div className="details-stat-box">
-                    <div className="label">Share Price</div>
-                    <div className="value">{selectedProperty.sharePriceEth} ETH</div>
-                  </div>
-                  <div className="details-stat-box">
-                    <div className="label">Total Shares</div>
-                    <div className="value">{selectedProperty.totalShares}</div>
-                  </div>
-                  <div className="details-stat-box">
-                    <div className="label">Shares Sold</div>
-                    <div className="value">{selectedProperty.sharesSold}</div>
-                  </div>
-                  <div className="details-stat-box">
-                    <div className="label">Available Shares</div>
-                    <div className="value">{selectedProperty.availableShares}</div>
-                  </div>
-                </div>
-
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "16px", wordBreak: "break-all" }}>
-                  Token Contract: <span style={{ color: "#a78bfa" }}>{selectedProperty.tokenAddress}</span>
-                </div>
-
-                <button
-                  className="btn-primary"
-                  style={{ padding: "16px", fontSize: "1.1rem", marginTop: "auto" }}
-                  disabled={selectedProperty.availableShares === 0}
-                  onClick={() => navigateTo("buy", selectedProperty)}
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '700', color: isDark ? '#e2e8f0' : '#334155' }}>Property Ownership</h3>
+            </div>
+            <div style={{ height: '220px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart 
+                  data={portfolio.filter(p => p.sharesOwned > 0).map(p => ({
+                    ...p,
+                    remainingShares: Math.max(0, p.totalShares - p.sharesOwned)
+                  }))} 
+                  margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
                 >
-                  {selectedProperty.availableShares === 0 ? "Sold Out" : "Buy Shares Now"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* BUY */}
-        {currentPage === "buy" && selectedProperty && (
-          <div className="page-buy">
-            <div className="page-header">
-              <button className="back-btn" onClick={() => navigateTo("details", selectedProperty)}>← Back</button>
-              <h2>Buy Shares — {selectedProperty.name}</h2>
-            </div>
-
-            <div className="buy-container">
-              <div className="buy-summary">
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
-                  <span style={{ color: "var(--text-muted)" }}>Share Price</span>
-                  <span style={{ fontWeight: "600", textAlign: "right" }}>
-                    {selectedProperty.sharePriceEth} ETH
-                    {ethInr && <span style={{ display: "block", fontSize: "0.78rem", color: "var(--text-muted)", fontWeight: 400 }}>{toInr(selectedProperty.sharePriceEth)}</span>}
-                  </span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
-                  <span style={{ color: "var(--text-muted)" }}>Available Shares</span>
-                  <span style={{ fontWeight: "600" }}>{selectedProperty.availableShares}</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted)" }}>Shares Sold</span>
-                  <span style={{ fontWeight: "600" }}>{selectedProperty.sharesSold} / {selectedProperty.totalShares}</span>
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label>Enter Number of Shares</label>
-                <div className="share-calc">
-                  <div className="calc-row">
-                    <span>Shares to Buy</span>
-                    <input 
-                      type="number" 
-                      min="1" 
-                      max={selectedProperty.availableShares}
-                      value={sharesToBuy}
-                      onChange={(e) => setSharesToBuy(Math.max(1, parseInt(e.target.value) || 1))}
-                    />
-                  </div>
-                  <div className="calc-row total">
-                    <span>Total Price</span>
-                    <span>{(sharesToBuy * parseFloat(selectedProperty.sharePriceEth)).toFixed(3)} ETH</span>
-                  </div>
-                </div>
-
-                <button 
-                  className="btn-primary" 
-                  style={{ width: "100%", padding: "16px", marginTop: "20px" }}
-                  onClick={handleBuyShares}
-                  disabled={buyStatus.state === "processing"}
-                >
-                  {buyStatus.state === "processing" ? "Processing..." : `Buy ${sharesToBuy} Shares`}
-                </button>
-              </div>
-
-              {/* Real-time Validation Hint */}
-              {walletAddress && sharesToBuy > 0 && (
-                <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "12px", textAlign: "center" }}>
-                  <i className="fas fa-shield-alt" style={{ marginRight: "6px", color: "var(--accent)" }}></i>
-                  FastAPI Validation: Ensuring secure transaction for {walletAddress.slice(0, 6)}...
-                </p>
-              )}
-
-              {buyStatus.state !== "idle" && (
-                <div className={`status-msg ${buyStatus.state}`}>
-                  {buyStatus.message}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* HISTORY */}
-        {currentPage === "history" && (
-          <div className="page-history">
-            <h2 className="page-header">Transaction History</h2>
-
-            <div className="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Investor</th>
-                    <th>Property</th>
-                    <th>Shares</th>
-                    <th>Amount (ETH)</th>
-                    <th>Tx Hash</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.length === 0 ? (
-                    <tr>
-                      <td colSpan="7" style={{ textAlign: "center", color: "var(--text-muted)", padding: "32px" }}>
-                        No transactions yet. Connect your wallet and buy shares to see history here.
-                      </td>
-                    </tr>
-                  ) : (
-                    history.map((tx, idx) => (
-                      <tr key={tx.id || `tx-${idx}`}>
-                        <td data-label="Date">{tx.date}</td>
-                        <td data-label="Investor">
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', background: 'var(--primary)', borderRadius: '50%', fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
-                              {getInvestorId(tx.investor)}
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? 'rgba(255,255,255,0.05)' : '#f1f5f9'} vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: textMuted, fontSize: 10 }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: textMuted, fontSize: 10 }} label={{ value: 'Tokens', angle: -90, position: 'insideLeft', offset: 15, style: { fill: textMuted, fontSize: 10, fontWeight: 600 } }} />
+                  <RechartsTooltip 
+                    cursor={{ fill: isDark ? 'rgba(255,255,255,0.03)' : '#f8fafc' }}
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const d = payload[0].payload;
+                        const rent = history
+                          .filter(tx => tx.propertyId === d.propertyId && tx.type === 'claim' && tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase())
+                          .reduce((acc, tx) => acc + parseFloat(tx.amountEth || 0), 0);
+                        return (
+                          <div style={{ background: isDark ? '#1e293b' : '#fff', border: `1px solid ${borderColor}`, padding: '12px', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}>
+                            <p style={{ margin: '0 0 8px', fontWeight: '700', color: isDark ? '#fff' : '#1e293b', fontSize: '0.85rem' }}>{d.name}</p>
+                            <div style={{ display: 'grid', gap: '4px', fontSize: '0.75rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: textMuted }}>Total Tokens:</span>
+                                <span style={{ color: isDark ? '#e2e8f0' : '#1e293b', fontWeight: '700' }}>{d.totalShares}</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: '#3b82f6' }}>Your Tokens:</span>
+                                <span style={{ color: '#3b82f6', fontWeight: '700' }}>{d.sharesOwned}</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: textMuted }}>Stake:</span>
+                                <span style={{ color: '#10b981', fontWeight: '700' }}>{((d.sharesOwned / d.totalShares) * 100).toFixed(1)}%</span>
+                              </div>
                             </div>
-                            {tx.investor || "Unknown"}
                           </div>
-                        </td>
-                        <td data-label="Property" style={{ fontWeight: "600" }}>
-                          {tx.type === 'distribute' ? 'Yield Distribution' : tx.propertyName}
-                        </td>
-                        <td data-label="Shares">
-                          {tx.shares}
-                        </td>
-                        <td data-label="Amount (ETH)" style={{ 
-                          fontWeight: "600", 
-                          color: tx.type === 'claim' ? '#10b981' : 'var(--accent)',
-                          whiteSpace: 'nowrap'
-                        }}>
-                          {tx.type === 'claim' ? '+' : '-'}{parseFloat(tx.amountEth).toFixed(4)}
-                          <span style={{ fontSize: '0.65rem', marginLeft: '6px', opacity: 0.6, display: 'inline-block', width: '40px' }}>
-                            ETH
-                          </span>
-                          <span style={{ fontSize: '0.65rem', opacity: 0.6 }}>
-                            {tx.type === 'claim' ? 'CREDIT' : 'DEBIT'}
-                          </span>
-                        </td>
-                        <td data-label="Tx Hash" style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                          {tx.txHash ? `${tx.txHash.slice(0, 10)}...` : "—"}
-                        </td>
-                        <td data-label="Status"><span className="status-badge success">{tx.status}</span></td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar dataKey="sharesOwned" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} barSize={40} onClick={(d) => setSelectedPropertyId(d.propertyId)} style={{ cursor: 'pointer' }} />
+                  <Bar dataKey="remainingShares" stackId="a" fill={isDark ? 'rgba(255,255,255,0.05)' : '#f1f5f9'} radius={[6, 6, 0, 0]} barSize={40} onClick={(d) => setSelectedPropertyId(d.propertyId)} style={{ cursor: 'pointer' }} />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
           </div>
-        )}
 
-        {/* PORTFOLIO */}
-        {currentPage === "portfolio" && (
-          <div className="page-portfolio">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
-              <h2 className="page-header" style={{ marginBottom: 0 }}>My Real Estate Portfolio</h2>
-              <button className="btn-secondary" onClick={loadPortfolio} disabled={loadingPortfolio}>
-                {loadingPortfolio ? "Syncing..." : "Refresh Balances"}
-              </button>
+          {/* RENTAL INCOME ANALYTICS */}
+          <div className="light-card" style={{ padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+              <div style={{ padding: '8px', borderRadius: '8px', background: isDark ? 'rgba(245, 158, 11, 0.1)' : '#fff7ed', color: '#f59e0b' }}>
+                <BarChart2 size={18} />
+              </div>
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '700', color: isDark ? '#e2e8f0' : '#334155' }}>Rental Income Analytics</h3>
             </div>
+            <div style={{ height: '220px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={rentalIncomeData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorRent" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? 'rgba(255,255,255,0.05)' : '#f1f5f9'} vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: textMuted, fontSize: 10 }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: textMuted, fontSize: 10 }} />
+                  <RechartsTooltip 
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const d = payload[0].payload;
+                        return (
+                          <div style={{ background: '#fff', border: '1px solid #e2e8f0', padding: '12px', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}>
+                            <p style={{ margin: '0 0 8px', fontWeight: '700', color: '#1e293b', fontSize: '0.85rem' }}>{d.fullName}</p>
+                            <div style={{ display: 'grid', gap: '4px', fontSize: '0.75rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: '#64748b' }}>Total Rent:</span>
+                                <span style={{ color: '#f59e0b', fontWeight: '700' }}>{d.value} ETH</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: '#64748b' }}>Last Rent:</span>
+                                <span style={{ color: '#10b981', fontWeight: '700' }}>{d.lastRent} ETH</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px' }}>
+                                <span style={{ color: '#64748b' }}>Ownership:</span>
+                                <span style={{ color: '#3b82f6', fontWeight: '700' }}>{d.ownershipPct}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Area type="monotone" dataKey="value" stroke="#f59e0b" fillOpacity={1} fill="url(#colorRent)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
 
-            {walletAddress && portfolio.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px', marginBottom: '40px' }}>
-                <div style={{ padding: '24px', borderRadius: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(10px)' }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Remaining Capital</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: '#10b981' }}>
-                    {currentBalance.toLocaleString()} <span style={{ fontSize: '1rem', opacity: 0.6 }}>ETH</span>
-                  </div>
-                  <div style={{ fontSize: '0.9rem', opacity: 0.6, marginTop: '4px' }}>Demo Wallet Funds</div>
-                </div>
-                <div style={{ padding: '24px', borderRadius: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(10px)' }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Portfolio Value</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-                    {portfolio.reduce((acc, item) => acc + ((item.sharesOwned || 0) * parseFloat(item.sharePriceEth || 0)), 0).toFixed(3)} <span style={{ fontSize: '1rem', opacity: 0.6 }}>ETH</span>
-                  </div>
-                  {ethInr && <div style={{ fontSize: '0.95rem', opacity: 0.6, marginTop: '4px' }}>{toInr(portfolio.reduce((acc, item) => acc + ((item.sharesOwned || 0) * parseFloat(item.sharePriceEth || 0)), 0))}</div>}
-                </div>
-                <div style={{ padding: '24px', borderRadius: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(10px)' }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Investments</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold' }}>{portfolio.length} <span style={{ fontSize: '1rem', opacity: 0.6 }}>Properties</span></div>
-                  <div style={{ fontSize: '0.9rem', color: '#10b981', marginTop: '4px' }}>✓ Earning Passive Rent</div>
-                </div>
-                <div style={{ padding: '24px', borderRadius: '16px', background: 'linear-gradient(135deg, rgba(16,185,129,0.1), rgba(16,185,129,0.02))', border: '1px solid rgba(16,185,129,0.2)', backdropFilter: 'blur(10px)' }}>
-                  <div style={{ color: '#10b981', fontSize: '0.8rem', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Claimable Rent</div>
-                  <div style={{ fontSize: '2.2rem', fontWeight: 'bold', color: '#10b981' }}>{pendingRent} <span style={{ fontSize: '1rem', opacity: 0.6 }}>ETH</span></div>
-                  <button 
-                    className="btn-primary" 
-                    style={{ width: '100%', marginTop: '12px', padding: '8px', fontSize: '0.9rem', background: '#10b981' }}
-                    disabled={parseFloat(pendingRent) === 0}
-                    onClick={handleClaimRent}
-                  >
-                    Claim Rent
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {!walletAddress ? (
-              <div style={{ textAlign: 'center', padding: '80px', background: 'rgba(255,255,255,0.02)', borderRadius: '20px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '20px' }}>🔐</div>
-                <h3 style={{ marginBottom: '12px' }}>Wallet Connection Required</h3>
-                <p style={{ color: 'var(--text-muted)', marginBottom: '24px' }}>Please connect your investor identity to view your private assets.</p>
-                <button className="btn-primary" onClick={connectWallet}>Connect Wallet</button>
-              </div>
-            ) : portfolio.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '80px', background: 'rgba(255,255,255,0.02)', borderRadius: '20px', border: '1px dashed rgba(255,255,255,0.1)' }}>
-                <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>You don't own any property tokens yet. Start investing to build your portfolio!</p>
-                <button className="btn-primary" onClick={() => navigateTo('home')}>Browse Properties</button>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Property</th>
-                      <th>Your Shares</th>
-                      <th>Value (ETH)</th>
-                      <th>Yield %</th>
-                      <th>Market Availability</th>
-                      <th>Distributed Rent</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {portfolio.map((item) => {
-                      const pInfo = properties.find(p => p.id === item.propertyId);
-                      return (
-                        <tr key={item.id}>
-                        <td data-label="Property" style={{ fontWeight: "600" }}>{item.name}</td>
-                        <td data-label="Your Shares" style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>{item.sharesOwned}</td>
-                        <td data-label="Value (ETH)" style={{ fontWeight: "500" }}>
-                          {(item.sharesOwned * parseFloat(item.sharePriceEth)).toFixed(3)} ETH
-                        </td>
-                        <td data-label="Yield %" style={{ color: '#10b981', fontWeight: '600' }}>
-                          {((parseFloat(pInfo?.totalRentDistributed || 0) / (pInfo?.totalShares || 100)) / parseFloat(item.sharePriceEth) * 100).toFixed(1)}%
-                        </td>
-                        <td data-label="Market Availability">
-                          <div style={{ fontSize: '0.9rem', fontWeight: '600', color: item.availableShares > 10 ? 'var(--text-muted)' : '#f59e0b' }}>
-                            {item.availableShares} / {item.totalShares} left
+        {/* ROW 2: INVESTMENT HOLDINGS */}
+        <div className="light-card" style={{ overflow: 'hidden', marginBottom: '16px' }}>
+          <div style={{ padding: '10px 20px', borderBottom: `1px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '700', color: isDark ? '#e2e8f0' : '#334155' }}>Investment Holdings</h3>
+            <span style={{ fontSize: '0.7rem', color: textMuted, background: isDark ? 'rgba(255,255,255,0.03)' : '#f8fafc', padding: '2px 10px', borderRadius: '20px' }}>
+              {portfolio.filter(p => Number(p.sharesOwned) > 0).length} Assets
+            </span>
+          </div>
+          <div className="custom-scrollbar" style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: '250px', display: 'block' }}>
+            <table className="portfolio-table" style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, textAlign: 'left' }}>
+              <thead style={{ position: 'sticky', top: 0, zIndex: 10, background: isDark ? '#1e293b' : '#ffffff' }}>
+                <tr style={{ fontSize: '0.75rem', color: textMuted, borderBottom: `1px solid ${borderColor}` }}>
+                  <th style={{ padding: '8px 20px' }}>Property</th>
+                  <th style={{ textAlign: 'center', padding: '8px' }}>Shares / Total</th>
+                  <th style={{ textAlign: 'center', padding: '8px' }}>Price</th>
+                  <th style={{ textAlign: 'center', padding: '8px' }}>Stake</th>
+                  <th style={{ textAlign: 'right', padding: '8px 20px' }}>Rent</th>
+                </tr>
+              </thead>
+              <tbody>
+                {portfolio.filter(p => Number(p.sharesOwned) > 0).length === 0 ? (
+                  <tr><td colSpan="5" style={{ textAlign: 'center', padding: '40px', color: textMuted, fontSize: '0.85rem' }}>No investments found.</td></tr>
+                ) : (
+                  [...portfolio]
+                    .filter(p => Number(p.sharesOwned) > 0)
+                    .sort((a, b) => Number(a.propertyId) - Number(b.propertyId))
+                    .map(item => {
+                    const isSelected = selectedPropertyId === item.propertyId;
+                    const ownershipPct = item.totalShares > 0 ? ((Number(item.sharesOwned) / item.totalShares) * 100).toFixed(1) : 0;
+                    const rent = history
+                      .filter(tx => tx.propertyId === item.propertyId && tx.type === 'claim' && tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase())
+                      .reduce((acc, tx) => acc + parseFloat(tx.amountEth || 0), 0);
+                    
+                    return (
+                      <tr 
+                        key={item.propertyId} 
+                        className={isSelected ? 'selected' : ''} 
+                        onClick={() => setSelectedPropertyId(isSelected ? null : item.propertyId)}
+                        style={{ cursor: 'pointer', transition: 'background 0.2s', borderBottom: `1px solid ${borderColor}` }}
+                      >
+                        <td style={{ padding: '10px 20px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <img src={item.image} style={{ width: '32px', height: '32px', borderRadius: '8px', objectFit: 'cover' }} alt="" />
+                            <div>
+                              <div style={{ fontWeight: '600', fontSize: '0.85rem', color: isDark ? '#fff' : '#1e293b' }}>{item.name}</div>
+                              <div style={{ fontSize: '0.7rem', color: textMuted }}>{item.location}</div>
+                            </div>
                           </div>
                         </td>
-                        <td data-label="Distributed Rent">
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                            {pInfo?.totalRentDistributed || '0'} ETH
+                        <td style={{ textAlign: 'center', padding: '10px 8px' }}>
+                          <div style={{ fontWeight: '700', fontSize: '0.85rem', color: isDark ? '#e2e8f0' : '#1e293b' }}>{item.sharesOwned} <span style={{ color: textMuted, fontWeight: '400', fontSize: '0.7rem' }}>/ {item.totalShares}</span></div>
+                          <div style={{ height: '3px', width: '60px', background: isDark ? 'rgba(255,255,255,0.05)' : '#f1f5f9', borderRadius: '2px', margin: '4px auto 0', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${(item.sharesOwned / item.totalShares) * 100}%`, background: '#3b82f6' }} />
                           </div>
                         </td>
-                        <td data-label="Action">
-                          <button className="btn-secondary" style={{ padding: '4px 12px', fontSize: '0.8rem' }} onClick={() => navigateTo('details', item)}>Details</button>
+                        <td style={{ textAlign: 'center', color: isDark ? '#cbd5e1' : '#475569', fontSize: '0.8rem', fontWeight: '500', padding: '10px 8px' }}>{item.sharePriceEth} ETH</td>
+                        <td style={{ textAlign: 'center', padding: '10px 8px' }}>
+                          <span style={{ padding: '2px 8px', borderRadius: '10px', background: isDark ? 'rgba(16, 185, 129, 0.08)' : '#f0fdf4', color: '#16a34a', fontWeight: '700', fontSize: '0.7rem' }}>
+                            {ownershipPct}%
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '10px 20px' }}>
+                          <div style={{ fontWeight: '700', color: '#f59e0b', fontSize: '0.85rem' }}>{rent.toFixed(4)} ETH</div>
                         </td>
                       </tr>
                     );
-                  })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-            {/* User Personal Activity */}
-            <div style={{ marginTop: '48px' }}>
-              <h3 style={{ marginBottom: '20px', fontSize: '1.2rem', color: 'var(--text-muted)' }}>
-                {isAdmin ? "Admin Operational History" : "My Recent Activity"}
-              </h3>
-              <div className="table-container" style={{ background: 'rgba(0,0,0,0.1)' }}>
-                <table style={{ fontSize: '0.9rem' }}>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Action / Property</th>
-                      <th>Shares</th>
-                      <th>Amount</th>
+        {/* MODAL TRANSACTION HISTORY */}
+        {selectedPropertyId !== null && (
+          <div 
+            style={{ 
+              position: 'fixed', 
+              top: 0, 
+              left: 0, 
+              width: '100%', 
+              height: '100%', 
+              background: 'rgba(0,0,0,0.7)', 
+              backdropFilter: 'blur(4px)',
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              zIndex: 9999,
+              padding: '20px'
+            }}
+            onClick={() => setSelectedPropertyId(null)}
+          >
+            <div 
+              className="light-card" 
+              style={{ 
+                width: '100%', 
+                maxHeight: '90vh',
+                maxWidth: '720px', 
+                padding: '20px', 
+                animation: 'scaleIn 0.2s ease-out',
+                position: 'relative',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+                display: 'flex',
+                flexDirection: 'column'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexShrink: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <History size={20} color="#3b82f6" />
+                  <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '700', color: isDark ? '#e2e8f0' : '#334155' }}>
+                    {portfolio.find(p => p.propertyId === selectedPropertyId)?.name} — History
+                  </h3>
+                </div>
+                <button 
+                  style={{ background: 'none', border: 'none', color: textMuted, cursor: 'pointer', fontSize: '1.2rem' }} 
+                  onClick={() => setSelectedPropertyId(null)}
+                >✕</button>
+              </div>
+              
+              <div className="custom-scrollbar" style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: '450px', paddingRight: '4px', flexGrow: 1 }}>
+                <table className="tx-table" style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+                  <thead style={{ position: 'sticky', top: 0, zIndex: 10, background: isDark ? '#1e293b' : '#ffffff' }}>
+                    <tr style={{ fontSize: '0.7rem', color: textMuted, borderBottom: `1px solid ${borderColor}`, textAlign: 'left' }}>
+                      <th style={{ padding: '10px' }}>Date</th>
+                      <th style={{ padding: '10px' }}>Type</th>
+                      <th style={{ textAlign: 'center', padding: '10px' }}>Shares</th>
+                      <th style={{ textAlign: 'right', padding: '10px' }}>Amount</th>
+                      <th style={{ textAlign: 'right', padding: '10px' }}>Rent</th>
+                      <th style={{ textAlign: 'center', padding: '10px' }}>Status</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {history
-                      .filter(tx => String(tx.buyerWallet || "").toLowerCase() === String(walletAddress || "").toLowerCase())
-                      .length === 0 ? (
-                        <tr>
-                          <td colSpan="4" style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                            No activity found for this account.
-                          </td>
-                        </tr>
-                      ) : (
-                        history
-                          .filter(tx => String(tx.buyerWallet || "").toLowerCase() === String(walletAddress || "").toLowerCase())
-                          .map((tx, idx) => (
-                            <tr key={tx.id || `personal-tx-${idx}`}>
-                              <td data-label="Date">{tx.date}</td>
-                              <td data-label="Property" style={{ fontWeight: '600' }}>
-                                {tx.type === 'distribute' ? `Distributed Yield (${tx.propertyName})` : tx.propertyName}
-                              </td>
-                              <td data-label="Shares">
-                                {tx.shares || "—"}
-                              </td>
-                              <td data-label="Amount" style={{ 
-                                color: tx.type === 'claim' ? '#10b981' : tx.type === 'distribute' ? '#f59e0b' : 'var(--accent)',
-                                fontWeight: '600',
-                                whiteSpace: 'nowrap'
-                              }}>
-                                {tx.type === 'claim' ? '+' : '-'}{parseFloat(tx.amountEth).toFixed(4)}
-                                <span style={{ fontSize: '0.7rem', marginLeft: '6px', opacity: 0.6, display: 'inline-block', width: '30px' }}>
-                                  ETH
+                  <tbody style={{ fontSize: '0.75rem' }}>
+                    {history.filter(tx => tx.propertyId === selectedPropertyId && (tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase() || tx.type === 'distribute' || tx.type === 'rent')).length === 0 ? (
+                      <tr><td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: textMuted }}>No transactions recorded for this property.</td></tr>
+                    ) : (
+                      history
+                        .filter(tx => tx.propertyId === selectedPropertyId && (tx.buyerWallet?.toLowerCase() === walletAddress.toLowerCase() || tx.type === 'distribute' || tx.type === 'rent'))
+                        .map((tx, idx) => {
+                          const isRent = tx.type === 'rent' || tx.type === 'distribute' || tx.type === 'claim';
+                          const prop = portfolio.find(p => p.propertyId === selectedPropertyId);
+                          const userShare = prop ? (prop.sharesOwned / prop.totalShares) : 0;
+                          const displayAmount = isRent ? (parseFloat(tx.amountEth) * userShare).toFixed(4) : tx.amountEth;
+                          
+                          return (
+                            <tr key={idx} style={{ borderBottom: `1px solid ${borderColor}` }}>
+                              <td style={{ padding: '10px' }}>{tx.date || new Date(tx.createdAt).toLocaleDateString()}</td>
+                              <td style={{ padding: '10px' }}>
+                                <span style={{ 
+                                  padding: '2px 8px', borderRadius: '4px', fontSize: '0.6rem', fontWeight: '700',
+                                  background: isRent ? 'rgba(245, 158, 11, 0.1)' : 'rgba(59, 130, 246, 0.1)',
+                                  color: isRent ? '#f59e0b' : '#3b82f6',
+                                  border: `1px solid ${isRent ? 'rgba(245, 158, 11, 0.2)' : 'rgba(59, 130, 246, 0.2)'}`
+                                }}>
+                                  {tx.type?.toUpperCase()}
                                 </span>
-                                <span style={{ fontSize: '0.7rem', opacity: 0.6 }}>
-                                  {tx.type === 'claim' ? 'Income' : tx.type === 'distribute' ? 'Sent' : 'Spent'}
+                              </td>
+                              <td style={{ textAlign: 'center', padding: '10px' }}>{tx.shares || '-'}</td>
+                              <td style={{ textAlign: 'right', fontWeight: '600', padding: '10px' }}>{!isRent ? `${tx.amountEth} ETH` : '-'}</td>
+                              <td style={{ textAlign: 'right', fontWeight: '700', color: '#10b981', padding: '10px' }}>{isRent ? `+${displayAmount} ETH` : '-'}</td>
+                              <td style={{ textAlign: 'center', padding: '10px' }}>
+                                <span style={{ color: '#10b981', fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
+                                  Success
                                 </span>
                               </td>
                             </tr>
-                          ))
-                      )}
+                          );
+                        })
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
           </div>
         )}
-        {currentPage === "admin" && isAdmin && (
-          <div className="page-history">
-            <h2 className="page-header" style={{ color: '#f59e0b' }}>⚙ Admin Dashboard</h2>
+      </div>
+    );
+  };
 
-            {/* Status banner */}
-            {adminStatus && (
-              <div style={{ background: adminStatus.startsWith('✅') ? 'rgba(16,185,129,0.15)' : adminStatus === 'processing' ? 'rgba(96,165,250,0.15)' : 'rgba(239,68,68,0.15)', border: `1px solid ${adminStatus.startsWith('✅') ? '#10b981' : adminStatus === 'processing' ? '#60a5fa' : '#ef4444'}`, borderRadius: '10px', padding: '12px 20px', marginBottom: '24px', color: adminStatus === 'processing' ? '#60a5fa' : 'white', fontWeight: 500 }}>
-                {adminStatus === 'processing' ? '⏳ Processing transaction... Please confirm in MetaMask.' : adminStatus}
-              </div>
-            )}
 
-            <div className="admin-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '32px' }}>
-
-              {/* Add Property Panel */}
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '24px' }}>
-                <h3 style={{ marginBottom: '20px', color: '#60a5fa' }}>🏗 Add New Property</h3>
-                {[['Property Name', 'name', 'text', 'e.g. Sunset Villas'], ['Token Symbol', 'symbol', 'text', 'e.g. SSV'], ['Share Price (ETH)', 'sharePriceEth', 'number', '0.01'], ['Total Shares', 'totalShares', 'number', '100'], ['Location', 'location', 'text', 'e.g. Delhi, India'], ['Image URL', 'image', 'text', 'https://...'], ['Description', 'description', 'text', '...']].map(([label, fKey, type]) => (
-                  <div key={`input-${fKey}`} className="input-group" style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '0.8rem' }}>{label}</label>
-                    <input type={type} value={adminForm[fKey]} onChange={e => setAdminForm(f => ({ ...f, [fKey]: e.target.value }))} style={{ padding: '8px 12px', fontSize: '0.9rem' }} />
-                  </div>
-                ))}
-                <button className="btn-primary" style={{ width: '100%', marginTop: '8px' }} onClick={handleAddProperty} disabled={adminStatus === 'processing' || !adminForm.name || !adminForm.symbol}>
-                  {adminStatus === 'processing' ? 'Deploying...' : 'Deploy Property Token'}
-                </button>
-              </div>
-
-              {/* Distribute Rent Panel */}
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '24px' }}>
-                <h3 style={{ marginBottom: '20px', color: '#10b981' }}>💰 Distribute Rent Yield</h3>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '20px' }}>Send ETH rental income to a property's yield pool. All token holders will be able to claim their proportional share.</p>
-                <div className="input-group" style={{ marginBottom: '12px' }}>
-                  <label style={{ fontSize: '0.8rem' }}>Property ID</label>
-                  <select style={{ background: 'rgba(255,255,255,0.06)', color: 'white', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '8px', padding: '8px 12px', width: '100%', fontSize: '0.9rem' }} value={adminRentForm.propertyId} onChange={e => setAdminRentForm(f => ({ ...f, propertyId: e.target.value }))}>
-                    {properties.map((p, i) => <option key={i} value={i} style={{ background: '#1e2130' }}>#{i} — {p.name}</option>)}
-                  </select>
-                </div>
-                <div className="input-group" style={{ marginBottom: '16px' }}>
-                  <label style={{ fontSize: '0.8rem' }}>Rent Amount (ETH)</label>
-                  <input type="number" min="0.001" step="0.01" value={adminRentForm.rentEth} onChange={e => setAdminRentForm(f => ({ ...f, rentEth: e.target.value }))} style={{ padding: '8px 12px', fontSize: '0.9rem' }} />
-                </div>
-                <div style={{ background: 'rgba(16,185,129,0.08)', borderRadius: '8px', padding: '12px', marginBottom: '16px', fontSize: '0.82rem', color: '#6ee7b7' }}>
-                  💡 {adminRentForm.rentEth} ETH will be split proportionally across all {properties[adminRentForm.propertyId]?.totalShares || '?'} shares of this property.
-                </div>
-                <button className="btn-primary" style={{ width: '100%', background: 'linear-gradient(135deg, #10b981, #059669)' }} onClick={handleDistributeRent} disabled={adminStatus === 'processing'}>
-                  {adminStatus === 'processing' ? 'Processing...' : 'Distribute Rent'}
-                </button>
-
-                {/* Assign Tenant Panel */}
-                <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '24px', marginTop: '24px' }}>
-                    <h3 style={{ marginBottom: '20px', color: '#f59e0b' }}>🏠 Assign Tenant</h3>
-                    <div className="input-group" style={{ marginBottom: '12px' }}>
-                      <label style={{ fontSize: '0.8rem' }}>Property</label>
-                      <select value={adminTenantForm.propertyId} onChange={e => setAdminTenantForm(f => ({ ...f, propertyId: e.target.value }))} style={{ width: '100%', padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', borderRadius: '8px' }}>
-                        {properties.map(p => <option key={p.id} value={p.id}>#{p.id} — {p.name}</option>)}
-                      </select>
-                    </div>
-                    <div className="input-group" style={{ marginBottom: '12px' }}>
-                      <label style={{ fontSize: '0.8rem' }}>Tenant Name</label>
-                      <input type="text" placeholder="e.g. John Doe" value={adminTenantForm.name} onChange={e => setAdminTenantForm(f => ({ ...f, name: e.target.value }))} />
-                    </div>
-                    <div className="input-group" style={{ marginBottom: '12px' }}>
-                      <label style={{ fontSize: '0.8rem' }}>Monthly Rent (ETH)</label>
-                      <input type="number" step="0.01" value={adminTenantForm.rentEth} onChange={e => setAdminTenantForm(f => ({ ...f, rentEth: e.target.value }))} />
-                    </div>
-                    <button className="btn-primary" style={{ width: '100%', background: 'linear-gradient(135deg, #f59e0b, #d97706)' }} onClick={handleSetTenant} disabled={adminStatus === 'processing' || !adminTenantForm.name}>
-                      {adminStatus === 'processing' ? 'Assigning...' : 'Assign Tenant'}
-                    </button>
-                </div>
-
-                {/* Properties overview table */}
-                <div style={{ marginTop: '28px' }}>
-                  <h4 style={{ marginBottom: '12px', color: 'var(--text-muted)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active Properties</h4>
-                   {properties.map((p) => (
-                    <div key={`active-prop-${p.id}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.85rem' }}>
-                      <span>#{p.id} {p.name}</span>
-                      <span style={{ color: '#10b981' }}>{p.totalRentDistributed || '0'} ETH distributed</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+  // -------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------
+  return (
+    <Router>
+      <div className="app-shell">
+        {notification.show && (
+          <div style={{ position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)', background: 'linear-gradient(135deg, #10b981, #059669)', color: 'var(--text-main)', padding: '16px 32px', borderRadius: '12px', boxShadow: '0 10px 25px -5px rgba(16, 185, 129, 0.4)', zIndex: 10000, display: 'flex', alignItems: 'center', gap: '12px', animation: 'slideDown 0.4s ease-out' }}>
+            <span style={{ fontSize: '1.5rem' }}>💰</span>
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '1rem' }}>Income Received!</div>
+              <div style={{ fontSize: '0.85rem', opacity: 0.9 }}>{notification.message}</div>
             </div>
+            <button onClick={() => setNotification({ show: false, message: "" })} style={{ background: 'none', border: 'none', color: 'var(--text-main)', cursor: 'pointer', marginLeft: '12px', opacity: 0.7 }}>✕</button>
           </div>
         )}
-      </main>
-    </div>
+
+        {location.pathname !== "/" && <Navbar />}
+
+        {walletError && (
+          <div style={{ position: 'fixed', top: '80px', right: '20px', fontSize: "0.72rem", color: "#f87171", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "6px", padding: "4px 10px", maxWidth: "260px", textAlign: "right", animation: "fadeIn 0.2s ease", zIndex: 1000 }}>
+            ⚠️ {walletError}
+          </div>
+        )}
+
+        <main>
+          <Routes>
+            <Route path="/" element={<Login onLogin={handleLoginSuccess} />} />
+            
+            <Route path="/properties" element={
+              <ProtectedRoute allowedRoles={["Investor"]}>
+                <PropertiesView />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/portfolio" element={
+              <ProtectedRoute allowedRoles={["Investor"]}>
+                <PortfolioView />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/admin" element={
+              <ProtectedRoute allowedRoles={["Admin"]}>
+                <AdminDashboard provider={provider} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/tenant" element={
+              <ProtectedRoute allowedRoles={["Tenant"]}>
+                <TenantDashboard provider={provider} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/history" element={<ProtectedRoute allowedRoles={["Admin"]}><HistoryView /></ProtectedRoute>} />
+            <Route path="/details/:id" element={<DetailsView />} />
+            <Route path="/buy/:id" element={<BuyView />} />
+            
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </div>
+      
+      <button 
+        onClick={toggleTheme}
+        title="Toggle Theme"
+        className="theme-toggle"
+      >
+        {theme === 'dark' ? '☀️' : '🌙'}
+      </button>
+    </Router>
   );
 }
+
+const HistoryRow = ({ tx, idx, getInvestorId }) => (
+  <tr key={idx}>
+    <td>{tx.date}</td>
+    <td>{tx.investor}</td>
+    <td>{tx.propertyName}</td>
+    <td>{tx.shares}</td>
+    <td>{tx.amountEth}</td>
+    <td>Success</td>
+  </tr>
+);

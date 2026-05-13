@@ -40,6 +40,7 @@ contract RealEstatePlatform is Ownable {
     struct Tenant {
         string name;
         uint256 rentAmount;
+        uint256 lastPaid;
         bool isActive;
     }
 
@@ -60,9 +61,13 @@ contract RealEstatePlatform is Ownable {
     event TenantAssigned(uint256 propertyId, string name, uint256 rentAmount);
 
     constructor() Ownable(msg.sender) {
-        addProperty("Green Villa", "GRV", 0.01 ether, 100);
-        addProperty("Ocean Apartments", "OCA", 0.02 ether, 80);
-        addProperty("Downtown Office", "DTO", 0.03 ether, 60);
+        addProperty("Manhattan Luxury Suite", "MLS", 0.01 ether, 100);
+        addProperty("London Bridge Flat", "LBF", 0.02 ether, 80);
+        addProperty("Dubai Marina Penthouse", "DMP", 0.03 ether, 60);
+        addProperty("Sydney Coastal Retreat", "SCR", 0.04 ether, 120);
+        addProperty("Tokyo Sky Tower", "TST", 0.05 ether, 100);
+        addProperty("Berlin Logistics Center", "BLC", 0.06 ether, 100);
+        addProperty("Singapore Global Mall", "SGM", 0.07 ether, 100);
     }
 
     function addProperty(
@@ -92,15 +97,37 @@ contract RealEstatePlatform is Ownable {
         uint256 rentAmount
     ) external onlyOwner {
         require(propertyId < properties.length, "Invalid property");
-        tenants[propertyId] = Tenant(name, rentAmount, true);
+        tenants[propertyId] = Tenant(name, rentAmount, 0, true);
         emit TenantAssigned(propertyId, name, rentAmount);
     }
 
     // 2. Tenant rent payment function
     function payRent(uint256 propertyId) external payable {
-        Tenant memory t = tenants[propertyId];
+        Tenant storage t = tenants[propertyId];
         require(t.isActive, "No active tenant");
         require(msg.value == t.rentAmount, "Incorrect rent amount");
+
+        t.lastPaid = block.timestamp;
+        _distribute(propertyId, msg.value);
+    }
+
+    struct TenantPayment {
+        uint256 lastPaid;
+        uint256 nextDue;
+    }
+
+    mapping(uint256 => mapping(address => TenantPayment)) public tenantPayments;
+
+    function payMonthlyRent(uint256 propertyId) external payable {
+        require(propertyId < properties.length, "Invalid property");
+
+        Property storage p = properties[propertyId];
+        uint256 monthlyRent = p.sharePriceWei;
+
+        require(msg.value >= monthlyRent, "Incorrect rent amount");
+
+        tenantPayments[propertyId][msg.sender].lastPaid = block.timestamp;
+        tenantPayments[propertyId][msg.sender].nextDue = block.timestamp + 30 days;
 
         _distribute(propertyId, msg.value);
     }
@@ -125,7 +152,9 @@ contract RealEstatePlatform is Ownable {
             
             if (userShares > 0) {
                 uint256 userShare = (userShares * amount) / p.totalShares;
-                pendingWithdrawals[investor] += userShare;
+                // Direct transfer to investor
+                (bool success, ) = payable(investor).call{value: userShare}("");
+                // We don't require success here to prevent one failed transfer from blocking everyone else
             }
         }
         

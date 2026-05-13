@@ -23,17 +23,25 @@ async function main() {
   const serverEnvPath = path.join(__dirname, '../../server/.env');
 
   const updateEnvFile = (filePath, key, value) => {
-    let content = '';
+    let lines = [];
     if (fs.existsSync(filePath)) {
-      content = fs.readFileSync(filePath, 'utf8');
+      lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
     }
-    const regex = new RegExp(`^${key}=.*$`, 'm');
-    if (content.match(regex)) {
-      content = content.replace(regex, `${key}=${value}`);
-    } else {
-      content += `\n${key}=${value}`;
+    
+    let found = false;
+    const newLines = lines.map(line => {
+      if (line.startsWith(`${key}=`)) {
+        found = true;
+        return `${key}=${value}`;
+      }
+      return line;
+    });
+
+    if (!found) {
+      newLines.push(`${key}=${value}`);
     }
-    fs.writeFileSync(filePath, content.trim() + '\n');
+
+    fs.writeFileSync(filePath, newLines.join('\n').trim() + '\n');
   };
 
   updateEnvFile(clientEnvPath, 'VITE_CONTRACT_ADDRESS', contractAddress);
