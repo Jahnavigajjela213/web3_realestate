@@ -5,7 +5,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
 } from "recharts";
-import { Users, X, MapPin, ExternalLink, TrendingUp, ShieldCheck, Wallet } from "lucide-react";
+import { Users, X, MapPin, ExternalLink, TrendingUp, ShieldCheck, Wallet, Sparkles } from "lucide-react";
+import { aiOrchestrator } from "../services/agentOrchestrator";
+import AIAgentPanel from "../components/AIAgentPanel";
+import AIAssistantButton from "../components/AIAssistantButton";
+
 
 const COLORS = ['#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#fb923c'];
 
@@ -125,6 +129,14 @@ const AdminDashboard = ({ provider }) => {
   const [portfolioView, setPortfolioView] = useState('table'); // 'card' or 'table'
   const [selectedPieProperty, setSelectedPieProperty] = useState(null);
   const [detailProperty, setDetailProperty] = useState(null);
+  const [aiInsights, setAiInsights] = useState({ insights: [], recommendations: [], notifications: [] });
+
+  useEffect(() => {
+    if (!loading && properties.length > 0) {
+      aiOrchestrator.getInsights('Admin', { properties, transactions: history }).then(setAiInsights);
+    }
+  }, [loading, properties, history]);
+
 
   const loadData = async () => {
     setLoading(true);
@@ -395,7 +407,15 @@ const AdminDashboard = ({ provider }) => {
         </div>
       )}
 
+      {/* AI AGENT INSIGHTS */}
+      <AIAgentPanel 
+        title="Admin AI Strategist" 
+        data={aiInsights} 
+        icon={<Sparkles size={20} color="#f59e0b" />} 
+      />
+
       {/* ROW 1: SIDE BY SIDE CHARTS */}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
         <div className="card" style={{ padding: '16px', minHeight: '280px' }}>
           <h4 style={{ marginBottom: '12px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>Property Token Distribution</h4>
@@ -884,8 +904,11 @@ const AdminDashboard = ({ provider }) => {
         </div>
       )}
 
+      {/* FLOATING AI ASSISTANT */}
+      <AIAssistantButton role="Admin" contextData={{ properties, transactions: history }} />
     </div>
   );
 };
+
 
 export default AdminDashboard;

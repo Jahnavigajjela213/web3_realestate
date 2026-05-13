@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { fetchProperties, payRentOnChain } from "../services/contract";
-import { AlertCircle, CheckCircle, Clock, Calendar, DollarSign, Home, TrendingUp, LayoutGrid, List } from "lucide-react";
+import { AlertCircle, CheckCircle, Clock, Calendar, DollarSign, Home, TrendingUp, LayoutGrid, List, Sparkles } from "lucide-react";
+import { aiOrchestrator } from "../services/agentOrchestrator";
+import AIAgentPanel from "../components/AIAgentPanel";
+import AIAssistantButton from "../components/AIAssistantButton";
+
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, AreaChart, Area
@@ -33,6 +37,8 @@ const TenantDashboard = ({ provider }) => {
   const [history, setHistory] = useState([]);
   const [dismissedAlerts, setDismissedAlerts] = useState(new Set());
   const [viewType, setViewType] = useState("grid"); // "grid" or "table"
+  const [aiInsights, setAiInsights] = useState({ insights: [], recommendations: [], notifications: [] });
+
   
   const walletAddress = localStorage.getItem("walletAddress") || "";
   
@@ -63,6 +69,15 @@ const TenantDashboard = ({ provider }) => {
   useEffect(() => {
     loadData();
   }, [tenantName]);
+
+  useEffect(() => {
+    if (!loading && properties.length > 0) {
+      // Find the first property where this user might be a tenant (for demo purposes)
+      const tenantProperty = properties[0]; 
+      aiOrchestrator.getInsights('Tenant', { tenantProperty }).then(setAiInsights);
+    }
+  }, [loading, properties]);
+
 
   const handlePayRent = async (p) => {
     setStatus({ type: "processing", message: `Processing rent payment for ${p.name}...` });
@@ -362,7 +377,15 @@ const TenantDashboard = ({ provider }) => {
       )}
 
       {/* SUMMARY CARDS REMOVED BY USER REQUEST */}
+      {/* AI AGENT INSIGHTS */}
+      <AIAgentPanel 
+        title="Rent Assistant AI" 
+        data={aiInsights} 
+        icon={<Sparkles size={20} color="#f59e0b" />} 
+      />
+
       {/* ROW 2: AVAILABLE PROPERTIES */}
+
       <div 
         className="card" 
         style={{ 
@@ -793,8 +816,11 @@ const TenantDashboard = ({ provider }) => {
           </table>
         </div>
       </div>
+      {/* FLOATING AI ASSISTANT */}
+      <AIAssistantButton role="Tenant" contextData={{ tenantProperty: properties[0] }} />
     </div>
   );
 };
+
 
 export default TenantDashboard;

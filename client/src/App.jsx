@@ -12,7 +12,10 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, AreaChart, Area
 } from "recharts";
-import { Wallet, PieChart as PieChartIcon, Home, DollarSign, TrendingUp, Calendar, RefreshCw, BarChart2, History } from "lucide-react";
+import { Users, LayoutDashboard, History, PieChart as PieChartIcon, Activity, LogOut, Wallet, MapPin, Building, TrendingUp, Sparkles, RefreshCw, BarChart2 } from 'lucide-react';
+import { aiOrchestrator } from './services/agentOrchestrator';
+import AIAgentPanel from './components/AIAgentPanel';
+import AIAssistantButton from './components/AIAssistantButton';
 
 export default function App() {
   const [walletAddress, setWalletAddress] = useState("");
@@ -25,7 +28,8 @@ export default function App() {
   const [ethInr, setEthInr] = useState(null); // live ETH price in INR
   const [portfolio, setPortfolio] = useState([]);
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
-  const [pendingRent, setPendingRent] = useState("0.0");
+  const [pendingRent, setPendingRent] = useState("0");
+  const [aiInsights, setAiInsights] = useState({ insights: [], recommendations: [], notifications: [] });
   const [notification, setNotification] = useState({ show: false, message: "" });
   
 const DEMO_NAMES = [
@@ -119,15 +123,17 @@ const INITIAL_BALANCE = 10000;
     setLoading(true);
     setLoadError("");
     try {
-      const data = await fetchProperties();
-      setProperties(data);
+      const response = await fetch(`${APP_CONFIG.apiBaseUrl}/properties`);
+      const result = await response.json();
+      setProperties(result.data || []);
     } catch (err) {
       console.error("Failed to load properties:", err);
-      setLoadError("Could not connect to contract. Make sure Hardhat node is running and VITE_CONTRACT_ADDRESS is set.");
+      setLoadError("Could not connect to backend. Make sure the server is running.");
     } finally {
       setLoading(false);
     }
   }, []);
+
 
   // -------------------------------------------------------------------
   // Load transactions from backend (GLOBAL)
@@ -160,6 +166,15 @@ const INITIAL_BALANCE = 10000;
     loadProperties();
     loadHistory();
   }, [loadProperties, loadHistory]);
+
+
+  useEffect(() => {
+    if (walletAddress && properties.length > 0) {
+      const role = localStorage.getItem("role") || "Investor";
+      aiOrchestrator.getInsights(role, { portfolio, properties, transactions: history }).then(setAiInsights);
+    }
+  }, [walletAddress, portfolio, properties, history]);
+
 
   // Fetch live ETH → INR price from CoinGecko
   useEffect(() => {
@@ -1246,7 +1261,15 @@ const INITIAL_BALANCE = 10000;
           </div>
         </div>
 
+        {/* AI INSIGHTS */}
+        <AIAgentPanel 
+          title="Portfolio Intelligence" 
+          data={aiInsights} 
+          icon={<Sparkles size={18} color="#f59e0b" />} 
+        />
+
         {/* ROW 2: INVESTMENT HOLDINGS */}
+
         <div className="light-card" style={{ overflow: 'hidden', marginBottom: '16px' }}>
           <div style={{ padding: '10px 20px', borderBottom: `1px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: '700', color: isDark ? '#e2e8f0' : '#334155' }}>Investment Holdings</h3>
@@ -1488,6 +1511,9 @@ const INITIAL_BALANCE = 10000;
           </Routes>
         </main>
       </div>
+      
+      <AIAssistantButton role={localStorage.getItem("role") || "Investor"} contextData={{ portfolio, properties, transactions: history }} />
+
       
       <button 
         onClick={toggleTheme}
