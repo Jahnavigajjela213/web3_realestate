@@ -294,135 +294,139 @@ def get_portfolio(wallet_address: str, db: Session = Depends(get_db)):
         except Exception as e:
             print(f"Graceful handle: Contract interaction failed ({e}). Using mock/metadata only.")
 
-    txs = [tx_to_dict(t) for t in db.query(DbTransaction).all()]
+        txs = [tx_to_dict(t) for t in db.query(DbTransaction).all()]
     
-    # Fetch global pending rent for this user from contract
-    total_pending_wei = 0
-    try:
-        total_pending_wei = contract.functions.pendingWithdrawals(checksum_wallet).call()
-    except:
-        pass
-
-    # Calculate mock pending rent — only count rent AFTER last claim per property
-    mock_pending_eth = 0.0
-    # Find all mock distributions (direct distributions + tenant rent payments)
-    distribute_txs = [t for t in txs if t.get("type") in ["distribute", "rent"]]
-    # Find all mock claims by this user
-    claim_txs = [t for t in txs if t.get("type") == "claim" and str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower()]
-    
-    # Find the timestamp of the user's most recent claim (global fallback)
-    last_global_claim_time = ""
-    if claim_txs:
-        last_global_claim_time = max(t.get("createdAt", "") for t in claim_txs)
-    
-    portfolio = []
-    for i, p in enumerate(raw_props):
-        # Real On-chain balance
-        token_contract = w3.eth.contract(address=Web3.to_checksum_address(p[4]), abi=ERC20_ABI)
+        # Fetch global pending rent for this user from contract
+        total_pending_wei = 0
         try:
-            on_chain_balance = token_contract.functions.balanceOf(checksum_wallet).call()
+            if contract:
+                total_pending_wei = contract.functions.pendingWithdrawals(checksum_wallet).call()
         except:
-            on_chain_balance = 0
+            pass
+
+        # Calculate mock pending rent — only count rent AFTER last claim per property
+        mock_pending_eth = 0.0
+        # Find all mock distributions (direct distributions + tenant rent payments)
+        distribute_txs = [t for t in txs if t.get("type") in ["distribute", "rent"]]
+        # Find all mock claims by this user
+        claim_txs = [t for t in txs if t.get("type") == "claim" and str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower()]
         
-        # Mock balance for this user
-        token_address = p[4]
-        if token_address:
-            token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+        # Find the timestamp of the user's most recent claim (global fallback)
+        last_global_claim_time = ""
+        if claim_txs:
+            last_global_claim_time = max(t.get("createdAt", "") for t in claim_txs)
+        
+        portfolio = []
+        for i, p in enumerate(raw_props):
+            # Real On-chain balance
+            token_contract = w3.eth.contract(address=Web3.to_checksum_address(p[4]), abi=ERC20_ABI)
             try:
-                real_balance = token_contract.functions.balanceOf(checksum_wallet).call()
+                on_chain_balance = token_contract.functions.balanceOf(checksum_wallet).call()
             except:
-                real_balance = 0
+                on_chain_balance = 0
             
-            # ADD MOCK SHARES FROM HISTORY (for demo visibility)
+            # Mock balance for this user
+            token_address = p[4]
+            if token_address:
+                token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+                try:
+                    real_balance = token_contract.functions.balanceOf(checksum_wallet).call()
+                except:
+                    real_balance = 0
+                
+                # ADD MOCK SHARES FROM HISTORY (for demo visibility)
+                mock_shares = sum(int(t.get("sharesToBuy", 0)) for t in txs if int(t.get("propertyId", -1)) == i and str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type", "buy") == "buy")
+                
+                total_user_shares = real_balance + mock_shares
+
+                if total_user_shares > 0:
+                    # Find last claim time for THIS property (or fall back to global last claim)
+                    prop_claims = [t for t in claim_txs if int(t.get("propertyId", -1)) == i]
+                    last_claim_time = max((t.get("createdAt", "") for t in prop_claims), default=last_global_claim_time)
+                    
+                    # Only count rent distributions that happened AFTER the last claim
+                    new_distributions = sum(
+                        float(t.get("amountEth", 0))
+                        for t in distribute_txs
+                        if int(t.get("propertyId")) == i and t.get("createdAt", "") > last_claim_time
+                    )
+                    mock_pending_eth += (total_user_shares / p[2]) * new_distributions
+                    
+                    # Total ever distributed (for display)
+                    all_distributions = sum(float(t.get("amountEth", 0)) for t in distribute_txs if int(t.get("propertyId", -1)) == i)
+                    
+                    portfolio.append({
+                        "propertyId": i,
+                        "propertyName": p[0],
+                        "sharesOwned": total_user_shares,
+                        "totalShares": p[2],
+                        "sharePriceEth": str(w3.from_wei(p[1], 'ether')),
+                        "valueEth": f"{(total_user_shares * float(w3.from_wei(p[1], 'ether'))):.3f}",
+                        "totalPropertyRentDistributed": str(float(w3.from_wei(p[5], 'ether')) + all_distributions)
+                    })
+
+        # ADD SIMULATED PROPERTIES TO PORTFOLIO
+        simulated = [prop_to_dict(p) for p in db.query(PropertyMetadata).filter_by(isSimulated=True).all()]
+        for sp in simulated:
+            i = int(sp["id"])
+            # Mock shares for this simulated property
             mock_shares = sum(int(t.get("sharesToBuy", 0)) for t in txs if int(t.get("propertyId", -1)) == i and str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type", "buy") == "buy")
             
-            total_user_shares = real_balance + mock_shares
-
-            if total_user_shares > 0:
-                # Find last claim time for THIS property (or fall back to global last claim)
+            if mock_shares > 0:
+                # Calculate mock rent earned for this simulated property
                 prop_claims = [t for t in claim_txs if int(t.get("propertyId", -1)) == i]
                 last_claim_time = max((t.get("createdAt", "") for t in prop_claims), default=last_global_claim_time)
                 
-                # Only count rent distributions that happened AFTER the last claim
+                # Rent distributions for simulated property
+                distribute_txs_prop = [t for t in txs if t.get("type") in ["distribute", "rent"] and int(t.get("propertyId", -1)) == i]
+                
                 new_distributions = sum(
                     float(t.get("amountEth", 0))
-                    for t in distribute_txs
-                    if int(t.get("propertyId")) == i and t.get("createdAt", "") > last_claim_time
+                    for t in distribute_txs_prop
+                    if t.get("createdAt", "") > last_claim_time
                 )
-                mock_pending_eth += (total_user_shares / p[2]) * new_distributions
+                mock_pending_eth += (mock_shares / sp["totalShares"]) * new_distributions
                 
                 # Total ever distributed (for display)
-                all_distributions = sum(float(t.get("amountEth", 0)) for t in distribute_txs if int(t.get("propertyId", -1)) == i)
+                all_distributions = sum(float(t.get("amountEth", 0)) for t in distribute_txs_prop)
                 
                 portfolio.append({
                     "propertyId": i,
-                    "propertyName": p[0],
-                    "sharesOwned": total_user_shares,
-                    "totalShares": p[2],
-                    "sharePriceEth": str(w3.from_wei(p[1], 'ether')),
-                    "valueEth": f"{(total_user_shares * float(w3.from_wei(p[1], 'ether'))):.3f}",
-                    "totalPropertyRentDistributed": str(float(w3.from_wei(p[5], 'ether')) + all_distributions)
+                    "propertyName": sp["name"],
+                    "sharesOwned": mock_shares,
+                    "totalShares": sp["totalShares"],
+                    "sharePriceEth": sp["sharePriceEth"],
+                    "valueEth": f"{(mock_shares * float(sp['sharePriceEth'])):.3f}",
+                    "totalPropertyRentDistributed": str(all_distributions)
                 })
-
-    # ADD SIMULATED PROPERTIES TO PORTFOLIO
-    simulated = [prop_to_dict(p) for p in db.query(PropertyMetadata).filter_by(isSimulated=True).all()]
-    for sp in simulated:
-        i = int(sp["id"])
-        # Mock shares for this simulated property
-        mock_shares = sum(int(t.get("sharesToBuy", 0)) for t in txs if int(t.get("propertyId", -1)) == i and str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type", "buy") == "buy")
         
-        if mock_shares > 0:
-            # Calculate mock rent earned for this simulated property
-            prop_claims = [t for t in claim_txs if int(t.get("propertyId", -1)) == i]
-            last_claim_time = max((t.get("createdAt", "") for t in prop_claims), default=last_global_claim_time)
-            
-            # Rent distributions for simulated property
-            distribute_txs = [t for t in txs if t.get("type") in ["distribute", "rent"] and int(t.get("propertyId", -1)) == i]
-            
-            new_distributions = sum(
-                float(t.get("amountEth", 0))
-                for t in distribute_txs
-                if t.get("createdAt", "") > last_claim_time
-            )
-            mock_pending_eth += (mock_shares / sp["totalShares"]) * new_distributions
-            
-            # Total ever distributed (for display)
-            all_distributions = sum(float(t.get("amountEth", 0)) for t in distribute_txs)
-            
-            portfolio.append({
-                "propertyId": i,
-                "propertyName": sp["name"],
-                "sharesOwned": mock_shares,
-                "totalShares": sp["totalShares"],
-                "sharePriceEth": sp["sharePriceEth"],
-                "valueEth": f"{(mock_shares * float(sp['sharePriceEth'])):.3f}",
-                "totalPropertyRentDistributed": str(all_distributions)
-            })
-    
-    # Add on-chain pending (if any) to mock pending
-    final_pending_eth = max(0, float(w3.from_wei(total_pending_wei, 'ether')) + mock_pending_eth)
-            
-    # REAL-TIME ETH BALANCE FROM BLOCKCHAIN (Adjusted for Mock Transactions)
-    real_balance_eth = 0.0
-    try:
-        balance_wei = w3.eth.get_balance(checksum_wallet)
-        real_balance_eth = float(w3.from_wei(balance_wei, 'ether'))
-    except:
-        # Fallback for demo mode if node is offline
+        # Add on-chain pending (if any) to mock pending
+        final_pending_eth = max(0, float(w3.from_wei(total_pending_wei, 'ether')) + mock_pending_eth)
+                
+        # REAL-TIME ETH BALANCE FROM BLOCKCHAIN (Adjusted for Mock Transactions)
         real_balance_eth = 0.0
-    
-    # Calculate mock adjustments: -buys, -rent, +claims
-    mock_buys = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type", "buy") == "buy" and t.get("isMock"))
-    mock_rents = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type") == "rent" and t.get("isMock"))
-    mock_claims = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type") == "claim" and t.get("isMock"))
-    
-    final_balance_eth = max(0, real_balance_eth - mock_buys - mock_rents + mock_claims)
+        try:
+            balance_wei = w3.eth.get_balance(checksum_wallet)
+            real_balance_eth = float(w3.from_wei(balance_wei, 'ether'))
+        except:
+            # Fallback for demo mode if node is offline
+            real_balance_eth = 0.0
+        
+        # Calculate mock adjustments: -buys, -rent, +claims
+        mock_buys = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type", "buy") == "buy" and t.get("isMock"))
+        mock_rents = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type") == "rent" and t.get("isMock"))
+        mock_claims = sum(float(t.get("amountEth", 0)) for t in txs if str(t.get("buyerWallet", "")).lower() == str(wallet_address).lower() and t.get("type") == "claim" and t.get("isMock"))
+        
+        final_balance_eth = max(0, real_balance_eth - mock_buys - mock_rents + mock_claims)
 
-    return {
-        "data": portfolio,
-        "pendingRentEth": f"{final_pending_eth:.4f}",
-        "balanceEth": f"{final_balance_eth:.4f}"
-    }
+        return {
+            "data": portfolio,
+            "pendingRentEth": f"{final_pending_eth:.4f}",
+            "balanceEth": f"{final_balance_eth:.4f}"
+        }
+    except Exception as e:
+        print(f"Error in get_portfolio: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/transactions/{wallet}")
 def debug_txs(wallet: str, db: Session = Depends(get_db)):
